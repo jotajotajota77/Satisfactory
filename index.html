@@ -6,6 +6,12 @@
   <meta name="theme-color" content="#05060a" />
   <meta name="description" content="Ecossistema Emocional — um ambiente vivo, generativo e contemplativo. Mova-se, toque, e ele se lembra de você." />
   <title>Ecossistema Emocional</title>
+  <link rel="manifest" href="manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="Ecossistema" />
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
   <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -25,6 +31,17 @@
     <span class="sound-dot"></span>
   </button>
 
+  <!-- Caixinha de instalação (PWA), aparece após 30s -->
+  <div id="install" class="install-card" role="dialog" aria-label="instalar como aplicativo">
+    <img class="install-icon" src="icon-192.png" alt="" width="46" height="46" />
+    <div class="install-text">
+      <p class="install-title">Ecossistema Emocional</p>
+      <p id="install-hint" class="install-hint">instale como app &middot; funciona offline</p>
+    </div>
+    <button id="install-btn" class="install-btn" type="button">instalar</button>
+    <button id="install-close" class="install-close" type="button" aria-label="fechar">&times;</button>
+  </div>
+
   <noscript>
     <div style="position:fixed;inset:0;display:grid;place-items:center;color:#9fb;background:#05060a;font-family:sans-serif">
       Este ecossistema precisa de JavaScript para respirar.
@@ -33,5 +50,6 @@
 
   <script src="noise.js"></script>
   <script src="app.js"></script>
+  <script src="pwa.js"></script>
 </body>
 </html>
