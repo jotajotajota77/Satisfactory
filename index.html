@@ -1,0 +1,37 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#05060a" />
+  <meta name="description" content="Ecossistema Emocional — um ambiente vivo, generativo e contemplativo. Mova-se, toque, e ele se lembra de você." />
+  <title>Ecossistema Emocional</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <canvas id="stage" aria-label="Ecossistema Emocional"></canvas>
+
+  <!-- Sussurro de humor (canto) -->
+  <div id="whisper" class="whisper" aria-hidden="true"></div>
+
+  <!-- Convite inicial -->
+  <div id="invite" class="invite">
+    <p class="invite-line">mova-se &middot; toque &middot; respire</p>
+    <p class="invite-sub">algo já vivia aqui antes de você chegar</p>
+  </div>
+
+  <!-- Controles mínimos -->
+  <button id="sound" class="sound" title="som (m)" aria-label="alternar som">
+    <span class="sound-dot"></span>
+  </button>
+
+  <noscript>
+    <div style="position:fixed;inset:0;display:grid;place-items:center;color:#9fb;background:#05060a;font-family:sans-serif">
+      Este ecossistema precisa de JavaScript para respirar.
+    </div>
+  </noscript>
+
+  <script src="noise.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
