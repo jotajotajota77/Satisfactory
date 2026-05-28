@@ -79,13 +79,20 @@
     wind: { x: 0, y: 0 },
     shake: 0,
     flash: 0,
+    hueDrift: 0,   // evolução lenta da paleta (menos repetitivo)
+    hueShift: 0,   // empurrão transitório de cor (toques)
+    breath: 0,     // respiração do tempo (desacelera e volta)
     // coleções
     particles: [],
     creatures: [],
     garden: [],
     events: [],
     ripples: [],
+    sparks: [],
+    pulses: [],
     links: [],
+    drag: null,
+    dragField: { active: false, x: 0, y: 0, vx: 0, vy: 0, mode: 'corrente', swirl: 1, strength: 0 },
     // render
     repaint: true,
   };
@@ -165,13 +172,18 @@
 
   function accentHue(seed) {
     const arr = [pal.h0, pal.h1, pal.h2];
-    return arr[(seed | 0) % 3] + Math.sin(seed) * 8;
+    return arr[(seed | 0) % 3] + Math.sin(seed) * 14 + W.hueDrift + W.hueShift;
+  }
+  // de vez em quando, uma cor inesperada (complementar / fora da paleta)
+  function rareHue() {
+    const base = [pal.h0, pal.h1, pal.h2][(Math.random() * 3) | 0];
+    return base + pick([150, 180, 210, -120]) + W.hueDrift;
   }
 
   // ============================================================== ÁUDIO
   const Audio = (function () {
     let ctxA = null, master = null, wet = null, drone = null, droneFilter = null;
-    let oscs = [], lfo = null, lfoGain = null, dragOsc = null, dragGain = null, dragFilter = null;
+    let oscs = [], lfo = null, lfoGain = null, dragOsc = null, dragOsc2 = null, dragGain = null, dragFilter = null;
     let started = false, muted = false;
     let root = 196;
     let scale = [0, 2, 4, 7, 9];
@@ -225,12 +237,14 @@
         lfoGain = ctxA.createGain(); lfoGain.gain.value = 280;
         lfo.connect(lfoGain); lfoGain.connect(droneFilter.frequency); lfo.start();
 
-        // voz de arraste (drone que segue o gesto)
-        dragOsc = ctxA.createOscillator(); dragOsc.type = 'sawtooth'; dragOsc.frequency.value = root;
-        dragFilter = ctxA.createBiquadFilter(); dragFilter.type = 'lowpass'; dragFilter.frequency.value = 700; dragFilter.Q.value = 8;
+        // voz de arraste (sopro suave que segue o gesto — não mais áspero)
+        dragOsc = ctxA.createOscillator(); dragOsc.type = 'triangle'; dragOsc.frequency.value = root;
+        dragOsc2 = ctxA.createOscillator(); dragOsc2.type = 'sine'; dragOsc2.frequency.value = root * 2; dragOsc2.detune.value = 6;
+        dragFilter = ctxA.createBiquadFilter(); dragFilter.type = 'lowpass'; dragFilter.frequency.value = 520; dragFilter.Q.value = 2;
         dragGain = ctxA.createGain(); dragGain.gain.value = 0;
-        dragOsc.connect(dragFilter); dragFilter.connect(dragGain); dragGain.connect(master); dragGain.connect(verb);
-        dragOsc.start();
+        dragOsc.connect(dragFilter); dragOsc2.connect(dragFilter);
+        dragFilter.connect(dragGain); dragGain.connect(master); dragGain.connect(verb);
+        dragOsc.start(); dragOsc2.start();
 
         // bus de envio para plucks
         Audio.send = verb;
@@ -258,24 +272,47 @@
       return root * Math.pow(2, semi / 12);
     }
 
-    function pluck(i, gain, dur, type) {
+    // piano de feltro: parciais com leve inarmonicidade + envelope percussivo macio
+    function piano(input, vel, dur) {
       if (!started || !ctxA || muted) return;
       const now = ctxA.currentTime;
-      const o = ctxA.createOscillator();
-      o.type = type || 'triangle';
-      o.frequency.value = (typeof i === 'number' && i > 30) ? i : noteFreq(i);
-      const g = ctxA.createGain();
-      const peak = (gain || 0.18);
-      g.gain.setValueAtTime(0.0001, now);
-      g.gain.exponentialRampToValueAtTime(peak, now + 0.012);
-      g.gain.exponentialRampToValueAtTime(0.0001, now + (dur || 1.6));
-      o.connect(g); g.connect(master); g.connect(Audio.send);
-      o.start(now); o.stop(now + (dur || 1.6) + 0.05);
+      const f0 = (typeof input === 'number' && input > 30) ? input : noteFreq(input);
+      vel = vel == null ? 0.5 : clamp(vel, 0.02, 1);
+      dur = dur || 3.4;
+      const lp = ctxA.createBiquadFilter();
+      lp.type = 'lowpass';
+      lp.frequency.setValueAtTime(1400 + vel * 4200, now);
+      lp.frequency.exponentialRampToValueAtTime(620, now + dur * 0.6);
+      lp.Q.value = 0.4;
+      const bus = ctxA.createGain();
+      bus.gain.value = 1;
+      lp.connect(bus); bus.connect(master); bus.connect(Audio.send);
+      const partials = [[1, 1.0, 0], [2, 0.4, 0.7], [3, 0.2, 1.8], [4, 0.09, 3.2]];
+      for (let pi = 0; pi < partials.length; pi++) {
+        const mult = partials[pi][0], amp = partials[pi][1], inh = partials[pi][2];
+        const o = ctxA.createOscillator();
+        o.type = mult === 1 ? 'triangle' : 'sine';
+        o.frequency.value = f0 * mult * (1 + inh * 0.0007);
+        o.detune.value = rand(-4, 4);
+        const g = ctxA.createGain();
+        const peak = Math.max(0.0003, vel * amp * 0.42);
+        const d = Math.max(0.4, dur * (1 - (mult - 1) * 0.13));
+        g.gain.setValueAtTime(0.0001, now);
+        g.gain.exponentialRampToValueAtTime(peak, now + 0.006);
+        g.gain.exponentialRampToValueAtTime(0.0001, now + d);
+        o.connect(g); g.connect(lp);
+        o.start(now); o.stop(now + d + 0.08);
+      }
     }
 
-    function chord(indices, gain) {
+    function arp(indices, vel, spacing) {
       if (!started) return;
-      indices.forEach((i, k) => setTimeout(() => pluck(i, (gain || 0.1) * (1 - k * 0.12), 2.6, 'sine'), k * 70));
+      indices.forEach((i, k) => setTimeout(() => piano(i, (vel == null ? 0.4 : vel) * (1 - k * 0.05), 3.0), k * (spacing || 130)));
+    }
+
+    function chord(indices, vel) {
+      if (!started) return;
+      indices.forEach((i, k) => setTimeout(() => piano(i, (vel == null ? 0.4 : vel) * (1 - k * 0.1), 3.6), k * 45));
     }
 
     function thunder() {
@@ -305,11 +342,13 @@
       const now = ctxA.currentTime;
       if (active) {
         const i = Math.round(map(x, 0, W.w, 7, -2));
-        dragOsc.frequency.setTargetAtTime(noteFreq(i), now, 0.08);
-        dragFilter.frequency.setTargetAtTime(600 + W.speed * 60, now, 0.1);
-        dragGain.gain.setTargetAtTime(muted ? 0 : 0.06, now, 0.1);
+        const f = noteFreq(i);
+        dragOsc.frequency.setTargetAtTime(f, now, 0.12);
+        dragOsc2.frequency.setTargetAtTime(f * 2, now, 0.12);
+        dragFilter.frequency.setTargetAtTime(420 + W.speed * 24, now, 0.15);
+        dragGain.gain.setTargetAtTime(muted ? 0 : 0.038, now, 0.15);
       } else {
-        dragGain.gain.setTargetAtTime(0, now, 0.4);
+        dragGain.gain.setTargetAtTime(0, now, 0.5);
       }
     }
 
@@ -335,7 +374,7 @@
       return muted;
     }
 
-    return { init, start, pluck, chord, thunder, shimmer, dragMove, setMood, toggleMute,
+    return { init, start, piano, arp, chord, thunder, shimmer, dragMove, setMood, toggleMute,
       get started() { return started; }, get muted() { return muted; }, send: null };
   })();
 
@@ -349,21 +388,29 @@
     return clamp(Math.round(base), 60, 320);
   }
 
+  // formas: 0 ponto · 1 anel · 2 risco · 3 faísca · 4 névoa
+  const SHAPES = [0, 0, 0, 1, 1, 2, 2, 3, 4];
   function spawnParticle(x, y) {
     const r = Math.random();
     let type = TYPE.DRIFT;
     if (r > 0.55 && r <= 0.72) type = TYPE.FOLLOW;
     else if (r > 0.72 && r <= 0.9) type = TYPE.FLEE;
     else if (r > 0.9) type = TYPE.LEARN;
+    const isRare = Math.random() < 0.05;
     return {
       x: x === undefined ? rand(W.w) : x,
       y: y === undefined ? rand(W.h) : y,
       vx: rand(-0.2, 0.2), vy: rand(-0.2, 0.2),
       type,
-      size: rand(0.8, 2.6),
+      size: rand(0.8, 2.8),
       hueSeed: (Math.random() * 3) | 0,
+      hueOff: isRare ? pick([150, 180, -120]) + rand(-10, 10) : rand(-22, 22),
+      lightOff: rand(-10, 12),
+      shape: pick(SHAPES),
       phase: rand(TAU),
-      pulse: rand(0.4, 1.4),
+      pulse: rand(0.4, 1.5),
+      ang: rand(TAU),
+      spin: rand(-0.05, 0.05),
       lvx: 0, lvy: 0,
     };
   }
@@ -419,6 +466,34 @@
         fx += a.lvx * 0.05; fy += a.lvy * 0.05;
       }
 
+      // pulsos de toque: atração/repulsão radial com envelope no tempo
+      for (let q = 0; q < W.pulses.length; q++) {
+        const pu = W.pulses[q];
+        const dxq = a.x - pu.x, dyq = a.y - pu.y;
+        const dq = Math.sqrt(dxq * dxq + dyq * dyq) || 1;
+        if (dq < pu.radius) {
+          const env = 1 - pu.age / pu.dur;
+          const f = pu.force * (1 - dq / pu.radius) * env;
+          fx += (dxq / dq) * f; fy += (dyq / dq) * f;
+        }
+      }
+
+      // pincel de arraste: cada modo molda o movimento de forma diferente
+      if (W.dragField.active) {
+        const df = W.dragField;
+        const dxd = a.x - df.x, dyd = a.y - df.y;
+        const dd = Math.sqrt(dxd * dxd + dyd * dyd) || 1;
+        const R = W.min * 0.30;
+        if (dd < R) {
+          const fall = (1 - dd / R) * df.strength;
+          if (df.mode === 'corrente') { fx += df.vx * 0.06 * fall; fy += df.vy * 0.06 * fall; }
+          else if (df.mode === 'vortice') { fx += (-dyd / dd) * df.swirl * 0.5 * fall; fy += (dxd / dd) * df.swirl * 0.5 * fall; }
+          else if (df.mode === 'atrair') { fx -= (dxd / dd) * 0.45 * fall; fy -= (dyd / dd) * 0.45 * fall; }
+          else if (df.mode === 'espalhar') { fx += (dxd / dd) * 0.55 * fall; fy += (dyd / dd) * 0.55 * fall; }
+          else if (df.mode === 'tinta') { fx += (-(dxd / dd) * 0.12 + df.vx * 0.02) * fall; fy += (-(dyd / dd) * 0.12 + df.vy * 0.02) * fall; }
+        }
+      }
+
       a.vx = (a.vx + fx) * 0.96;
       a.vy = (a.vy + fy) * 0.96;
       const sp = Math.hypot(a.vx, a.vy);
@@ -432,6 +507,7 @@
       if (a.y < -10) a.y += W.h + 20; else if (a.y > W.h + 10) a.y -= W.h + 20;
 
       a.phase += sec * a.pulse;
+      a.ang += a.spin * sec * 60;
 
       // insere na grade
       const cx = (a.x / cell) | 0, cy = (a.y / cell) | 0;
@@ -474,7 +550,7 @@
       grid.forEach((b) => { if (b.length > best) { best = b.length; bk = b; } });
       if (best >= 6 && bk) {
         const cy = bk[0].y;
-        Audio.pluck(Math.round(map(cy, 0, W.h, 9, 0)), 0.05, 2.2, 'sine');
+        Audio.piano(Math.round(map(cy, 0, W.h, 9, 0)), 0.06, 2.8);
       }
     }
   }
@@ -493,21 +569,57 @@
         ctx.stroke();
       }
     }
-    // partículas
+    // partículas (formas e cores variadas)
     for (let p = 0; p < W.particles.length; p++) {
       const a = W.particles[p];
       const pulse = 0.55 + 0.45 * Math.sin(a.phase);
-      const hue = accentHue(a.hueSeed) + (a.type === TYPE.FLEE ? 18 : 0);
-      const alpha = 0.38 + 0.32 * pulse;
+      const hue = accentHue(a.hueSeed) + a.hueOff + (a.type === TYPE.FLEE ? 18 : 0);
+      const li = clamp(pal.light + a.lightOff, 30, 86);
+      const alpha = 0.34 + 0.30 * pulse;
       const r = a.size * (0.8 + 0.5 * pulse);
-      ctx.fillStyle = hsla(hue, pal.sat, pal.light, alpha);
+      ctx.fillStyle = hsla(hue, pal.sat, li, alpha);
+      ctx.strokeStyle = hsla(hue, pal.sat, li, alpha);
+      switch (a.shape) {
+        case 1: // anel
+          ctx.lineWidth = Math.max(0.6, r * 0.5);
+          ctx.beginPath(); ctx.arc(a.x, a.y, r * 1.5, 0, TAU); ctx.stroke();
+          break;
+        case 2: { // risco (alinhado ao movimento)
+          const sp = Math.hypot(a.vx, a.vy);
+          const ang = sp > 0.05 ? Math.atan2(a.vy, a.vx) : a.ang;
+          const len = r * (2 + Math.min(sp, 4));
+          ctx.lineWidth = Math.max(0.7, r * 0.8);
+          ctx.beginPath();
+          ctx.moveTo(a.x - Math.cos(ang) * len, a.y - Math.sin(ang) * len);
+          ctx.lineTo(a.x + Math.cos(ang) * len, a.y + Math.sin(ang) * len);
+          ctx.stroke();
+          break;
+        }
+        case 3: { // faísca (estrela de 4 pontas)
+          const len = r * 2.2;
+          ctx.lineWidth = Math.max(0.6, r * 0.5);
+          ctx.beginPath();
+          for (let s = 0; s < 4; s++) {
+            const aa = a.ang + (s * Math.PI) / 2;
+            ctx.moveTo(a.x, a.y);
+            ctx.lineTo(a.x + Math.cos(aa) * len, a.y + Math.sin(aa) * len);
+          }
+          ctx.stroke();
+          break;
+        }
+        case 4: // névoa (núcleo fraco, halo amplo)
+          ctx.fillStyle = hsla(hue, pal.sat, li + 6, alpha * 0.5);
+          ctx.beginPath(); ctx.arc(a.x, a.y, r * 0.7, 0, TAU); ctx.fill();
+          ctx.fillStyle = hsla(hue, pal.sat, li + 8, alpha * 0.07);
+          ctx.beginPath(); ctx.arc(a.x, a.y, r * 4.5, 0, TAU); ctx.fill();
+          continue;
+        default: // ponto
+          ctx.beginPath(); ctx.arc(a.x, a.y, r, 0, TAU); ctx.fill();
+      }
+      // halo comum
+      ctx.fillStyle = hsla(hue, pal.sat, li + 8, alpha * 0.09);
       ctx.beginPath();
-      ctx.arc(a.x, a.y, r, 0, TAU);
-      ctx.fill();
-      // halo
-      ctx.fillStyle = hsla(hue, pal.sat, pal.light + 8, alpha * 0.10);
-      ctx.beginPath();
-      ctx.arc(a.x, a.y, r * 3.2, 0, TAU);
+      ctx.arc(a.x, a.y, r * 3, 0, TAU);
       ctx.fill();
     }
   }
@@ -610,7 +722,11 @@
   function buildPlantStruct(seed) {
     const rng = Noise.mulberry32(seed >>> 0);
     const branches = 2 + (rng() * 4 | 0);
-    const struct = { branches: [], petals: 4 + (rng() * 5 | 0), height: 0.10 + rng() * 0.13 };
+    const struct = {
+      branches: [], petals: 3 + (rng() * 7 | 0), height: 0.10 + rng() * 0.14,
+      style: (rng() * 3) | 0,            // 0 redonda · 1 pontiaguda · 2 anelar
+      bloomAt: 0.45 + rng() * 0.22,      // quando a flor abre
+    };
     for (let i = 0; i < branches; i++) {
       struct.branches.push({
         at: 0.3 + rng() * 0.6,
@@ -626,14 +742,13 @@
     const seed = (Math.random() * 0xffffffff) >>> 0;
     const p = {
       nx: x / W.w, ny: y / W.h, seed,
-      hue: accentHue((Math.random() * 3) | 0) + rand(-12, 12),
+      hue: Math.random() < 0.28 ? rareHue() : accentHue((Math.random() * 3) | 0) + rand(-20, 20),
       plantedWall: Date.now(),
       struct: buildPlantStruct(seed),
     };
     W.garden.push(p);
     if (W.garden.length > MAX_PLANTS) W.garden.shift();
-    addRipple(x, y, 1);
-    Audio.pluck(Math.round(map(y, 0, W.h, 9, 0)), 0.22, 2.0, 'triangle');
+    addRipple(x, y, 1, p.hue);
   }
 
   function plantGrowth(p) {
@@ -683,17 +798,41 @@
         ctx.beginPath(); ctx.arc(ex, ey, tipR, 0, TAU); ctx.fill();
       }
 
-      // flor (quando maduro)
-      if (g > 0.55) {
-        const bloom = smooth(clamp((g - 0.55) / 0.45, 0, 1));
+      // flor (quando maduro) — estilo varia por planta
+      const bAt = p.struct.bloomAt;
+      if (g > bAt) {
+        const bloom = smooth(clamp((g - bAt) / (1 - bAt), 0, 1));
         const fr = H * 0.12 * bloom + lw;
         const petals = p.struct.petals;
-        for (let i = 0; i < petals; i++) {
-          const aa = (i / petals) * TAU + W.now * 0.0002;
-          const px = topX + Math.cos(aa) * fr;
-          const py = topY + Math.sin(aa) * fr;
-          ctx.fillStyle = hsla(p.hue + 20, pal.sat, pal.light + 6, 0.4 * bloom);
-          ctx.beginPath(); ctx.arc(px, py, fr * 0.5, 0, TAU); ctx.fill();
+        const spin = W.now * 0.0002;
+        if (p.struct.style === 1) {
+          // pontiaguda: pétalas como raios
+          ctx.lineWidth = Math.max(0.8, fr * 0.18);
+          for (let i = 0; i < petals; i++) {
+            const aa = (i / petals) * TAU + spin;
+            ctx.strokeStyle = hsla(p.hue + 18, pal.sat, pal.light + 6, 0.45 * bloom);
+            ctx.beginPath();
+            ctx.moveTo(topX, topY);
+            ctx.lineTo(topX + Math.cos(aa) * fr * 1.6, topY + Math.sin(aa) * fr * 1.6);
+            ctx.stroke();
+          }
+        } else if (p.struct.style === 2) {
+          // anelar: dois anéis de pontos
+          for (let ring = 1; ring <= 2; ring++) {
+            for (let i = 0; i < petals; i++) {
+              const aa = (i / petals) * TAU + spin * ring;
+              const rr = fr * (0.7 + ring * 0.5);
+              ctx.fillStyle = hsla(p.hue + 14 * ring, pal.sat, pal.light + 6, 0.32 * bloom);
+              ctx.beginPath(); ctx.arc(topX + Math.cos(aa) * rr, topY + Math.sin(aa) * rr, fr * 0.32, 0, TAU); ctx.fill();
+            }
+          }
+        } else {
+          // redonda: pétalas suaves
+          for (let i = 0; i < petals; i++) {
+            const aa = (i / petals) * TAU + spin;
+            ctx.fillStyle = hsla(p.hue + 20, pal.sat, pal.light + 6, 0.4 * bloom);
+            ctx.beginPath(); ctx.arc(topX + Math.cos(aa) * fr, topY + Math.sin(aa) * fr, fr * 0.5, 0, TAU); ctx.fill();
+          }
         }
         // núcleo
         ctx.fillStyle = hsla(p.hue + 40, pal.sat, pal.light + 18, 0.7 * bloom);
@@ -707,14 +846,20 @@
   }
 
   // ============================================================= RIPPLES
-  function addRipple(x, y, strength) {
-    W.ripples.push({ x, y, r: 2, max: W.min * (0.12 + 0.1 * (strength || 1)), a: 0.5, hue: accentHue(0) });
+  function addRipple(x, y, strength, hue, speed) {
+    W.ripples.push({
+      x, y, r: 2,
+      max: W.min * (0.12 + 0.12 * (strength || 1)),
+      a: 0.4 + 0.2 * (strength || 1),
+      sp: speed || 1.6,
+      hue: hue == null ? accentHue(0) : hue,
+    });
   }
   function updateRipples(dt) {
     const sec = dt / 1000;
     for (let i = W.ripples.length - 1; i >= 0; i--) {
       const r = W.ripples[i];
-      r.r += (r.max - r.r) * 1.6 * sec;
+      r.r += (r.max - r.r) * r.sp * sec;
       r.a -= 0.45 * sec;
       if (r.a <= 0.01) W.ripples.splice(i, 1);
     }
@@ -725,6 +870,73 @@
       ctx.lineWidth = 1.2;
       ctx.strokeStyle = hsla(r.hue, pal.sat, pal.light, r.a * 0.5);
       ctx.beginPath(); ctx.arc(r.x, r.y, r.r, 0, TAU); ctx.stroke();
+    }
+  }
+
+  // ============================================================== FAÍSCAS
+  function spawnBurst(x, y, count, opts) {
+    opts = opts || {};
+    const spread = opts.spread == null ? 0.6 : opts.spread;
+    const n = Math.min(count, 440 - W.sparks.length);
+    for (let i = 0; i < n; i++) {
+      const ang = opts.dir != null ? opts.dir + rand(-spread, spread) : rand(TAU);
+      const sp = rand(opts.spMin || 1, opts.spMax || 6);
+      W.sparks.push({
+        x, y,
+        vx: Math.cos(ang) * sp + (opts.vx || 0),
+        vy: Math.sin(ang) * sp + (opts.vy || 0),
+        life: 0, maxLife: rand(opts.lifeMin || 600, opts.lifeMax || 1800),
+        size: rand(opts.sizeMin || 0.8, opts.sizeMax || 2.4),
+        hue: opts.hue == null ? accentHue((Math.random() * 3) | 0) : opts.hue + rand(-12, 12),
+        drag: opts.drag == null ? 0.94 : opts.drag,
+        grav: opts.grav || 0,
+      });
+    }
+  }
+  function updateSparks(dt) {
+    const sec = dt / 1000;
+    for (let i = W.sparks.length - 1; i >= 0; i--) {
+      const s = W.sparks[i];
+      s.life += dt;
+      s.vx *= s.drag; s.vy = s.vy * s.drag + s.grav * sec * 60;
+      s.x += s.vx * sec * 60; s.y += s.vy * sec * 60;
+      if (s.life > s.maxLife) W.sparks.splice(i, 1);
+    }
+  }
+  function renderSparks() {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const s of W.sparks) {
+      const k = clamp(1 - s.life / s.maxLife, 0, 1);
+      ctx.fillStyle = hsla(s.hue, pal.sat, pal.light + 6, k * 0.7);
+      ctx.beginPath(); ctx.arc(s.x, s.y, s.size * (0.4 + k), 0, TAU); ctx.fill();
+    }
+  }
+
+  // ============================================================== PULSOS
+  function addPulse(x, y, force, radius, hue) {
+    W.pulses.push({
+      x, y, age: 0, dur: 900, r: 2,
+      radius: radius || W.min * 0.22, force,
+      hue: hue == null ? accentHue(0) : hue,
+    });
+    if (W.pulses.length > 8) W.pulses.shift();
+  }
+  function updatePulses(dt) {
+    const sec = dt / 1000;
+    for (let i = W.pulses.length - 1; i >= 0; i--) {
+      const pu = W.pulses[i];
+      pu.age += dt;
+      pu.r += (pu.radius - pu.r) * 3.2 * sec;
+      if (pu.age > pu.dur) W.pulses.splice(i, 1);
+    }
+  }
+  function renderPulses() {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const pu of W.pulses) {
+      const k = 1 - pu.age / pu.dur;
+      ctx.lineWidth = 1.4;
+      ctx.strokeStyle = hsla(pu.hue, pal.sat, pal.light + 6, k * 0.4);
+      ctx.beginPath(); ctx.arc(pu.x, pu.y, pu.r, 0, TAU); ctx.stroke();
     }
   }
 
@@ -824,6 +1036,7 @@
           // o outro visitante às vezes planta algo
           if (!e.planted && e.t > e.dur * 0.5 && Math.random() < 0.01 && W.garden.length < MAX_PLANTS) {
             plantSeed(e.x, e.y); e.planted = true;
+            Audio.piano(Math.round(map(e.y, 0, W.h, 8, 0)), 0.1, 3.2);
           }
         } else if (e.type === 'bloom') {
           // acelera o crescimento do jardim durante a floração
@@ -1011,6 +1224,12 @@
     if (W.dream && !wasDream) showWhisper('sonho', 7000);
     wasDream = W.dream;
 
+    // evolução lenta da paleta + decaimentos transitórios (menos repetitivo)
+    W.hueDrift = Math.sin(W.now * 0.00002) * 20 + Math.sin(W.now * 0.000071) * 10;
+    W.hueShift *= Math.pow(0.2, dt / 1000);
+    W.breath *= Math.pow(0.12, dt / 1000);
+    if (!W.pDown) W.dragField.active = false;
+
     // idle
     W.idle += dt;
 
@@ -1133,6 +1352,78 @@
     if (w) showWhisper(w, 6500);
   }
 
+  // ===================================================== TOQUES (efeitos)
+  function bloomNearby(x, y, radius) {
+    radius = radius || W.min * 0.28;
+    const r2 = radius * radius;
+    for (const p of W.garden) {
+      if (dist2(p.nx * W.w, p.ny * W.h, x, y) < r2) p.plantedWall -= 45000;
+    }
+  }
+
+  const TAP_PRIMARIES = ['semente', 'semente', 'semente', 'estrela', 'pulso', 'eco', 'broto', 'cardume'];
+  function tapEffect(x, y) {
+    const hue = Math.random() < 0.25 ? rareHue() : accentHue((Math.random() * 3) | 0);
+    switch (pick(TAP_PRIMARIES)) {
+      case 'semente':
+        plantSeed(x, y);
+        break;
+      case 'broto':
+        plantSeed(x, y);
+        bloomNearby(x, y, W.min * 0.2);
+        spawnBurst(x, y, 10, { hue, spMax: 3, lifeMax: 1400 });
+        break;
+      case 'estrela':
+        spawnBurst(x, y, 18 + (Math.random() * 16 | 0), { hue, spMin: 2, spMax: 7, sizeMax: 2.8 });
+        addPulse(x, y, -1.0, W.min * 0.18, hue);
+        addRipple(x, y, 0.8, hue, 2.6);
+        break;
+      case 'pulso':
+        addPulse(x, y, 1.4, W.min * 0.30, hue);
+        addRipple(x, y, 0.6, hue, 1.2);
+        addRipple(x, y, 1.0, hue, 0.9);
+        break;
+      case 'eco':
+        for (let i = 0; i < 3; i++) addRipple(x, y, 0.6 + i * 0.3, hue + i * 12, 0.8 + i * 0.5);
+        break;
+      case 'cardume':
+        for (let i = 0; i < 10; i++) {
+          if (W.particles.length < 360) W.particles.push(spawnParticle(x + rand(-20, 20), y + rand(-20, 20)));
+        }
+        spawnBurst(x, y, 8, { hue });
+        break;
+    }
+    // efeitos secundários que se combinam aleatoriamente
+    if (Math.random() < 0.40) spawnBurst(x, y, 6 + (Math.random() * 8 | 0), { hue: rareHue(), spMax: 5, lifeMax: 1200 });
+    if (Math.random() < 0.35) addPulse(x, y, Math.random() < 0.5 ? 0.8 : -0.8, W.min * 0.2, hue);
+    if (Math.random() < 0.30) W.hueShift = clamp(W.hueShift + rand(-40, 40), -60, 60);
+    if (Math.random() < 0.22) W.breath = clamp(W.breath + 0.4, 0, 0.55);
+    if (Math.random() < 0.30) addRipple(x, y, 0.5, rareHue(), rand(0.8, 2.4));
+    tapSound(x, y);
+  }
+
+  function tapSound(x, y) {
+    const deg = Math.round(map(x, 0, W.w, 0, 7));
+    const oct = Math.round(map(y, 0, W.h, 2, -1));
+    const base = deg + oct * (W.dream ? 6 : 5);
+    const vel = rand(0.3, 0.7);
+    const kind = Math.random();
+    if (kind < 0.4) {
+      Audio.piano(base, vel, rand(2.6, 4.2));
+    } else if (kind < 0.62) {
+      Audio.piano(base, vel, 3.4);
+      setTimeout(() => Audio.piano(base + pick([2, 3, 4]), vel * 0.8, 3.0), rand(40, 120));
+    } else if (kind < 0.84) {
+      const up = Math.random() < 0.5 ? 1 : -1;
+      Audio.arp([base, base + 2 * up, base + 4 * up], vel * 0.8, rand(90, 150));
+    } else {
+      Audio.chord([base, base + 2, base + 4], vel * 0.7);
+    }
+  }
+
+  const DRAG_MODES = ['corrente', 'vortice', 'atrair', 'espalhar', 'tinta'];
+  const DRAG_SECONDARIES = ['faiscar', 'plantar', 'cantar', 'cor', null, null];
+
   // ============================================================== INPUT
   function onMove(x, y) {
     W.ppx = W.px === -9999 ? x : W.px;
@@ -1148,13 +1439,37 @@
     if (sign !== 0 && sign !== W.lastSign) { W.jitter += 0.4; W.lastSign = sign; }
     W.idle = 0; W.lastMove = W.now;
 
-    if (W.pDown) {
-      // arraste cria correntes de vento/água
+    if (W.pDown && W.drag) {
+      // arraste: cada modo molda o mundo de forma diferente
       W.dragDist += inst;
-      W.wind.x = clamp(W.wind.x + ndx * 0.04, -8, 8);
-      W.wind.y = clamp(W.wind.y + ndy * 0.04, -8, 8);
+      const d = W.drag;
+      W.dragField.active = true;
+      W.dragField.x = x; W.dragField.y = y;
+      W.dragField.vx = W.pvx; W.dragField.vy = W.pvy;
+      W.dragField.strength = clamp(W.dragField.strength + 0.08, 0, 1);
+      // vento global suave (criaturas e ambiente também sentem)
+      W.wind.x = clamp(W.wind.x + ndx * 0.03, -7, 7);
+      W.wind.y = clamp(W.wind.y + ndy * 0.03, -7, 7);
       Audio.dragMove(true, x);
-      if (inst > 3 && Math.random() < 0.3) addRipple(x, y, 0.4);
+
+      // rastro orgânico conforme o modo
+      if (d.mode === 'tinta' && inst > 1) {
+        spawnBurst(x, y, 2, { hue: d.hue, spMin: 0.2, spMax: 1.2, drag: 0.9, lifeMin: 1400, lifeMax: 3200, sizeMax: 2.2 });
+      } else if (inst > 4 && Math.random() < 0.25) {
+        spawnBurst(x, y, 2, { hue: d.hue, dir: Math.atan2(ndy, ndx) + Math.PI, spread: 0.5, spMax: 3 });
+      }
+      // efeito secundário do arraste (combina com o primário)
+      if (d.secondary === 'faiscar' && inst > 2 && Math.random() < 0.3) {
+        spawnBurst(x, y, 3, { hue: rareHue(), spMax: 4, lifeMax: 1000 });
+      } else if (d.secondary === 'plantar' && W.now - d.inkAt > 900 && W.garden.length < MAX_PLANTS && inst > 1) {
+        d.inkAt = W.now;
+        if (Math.random() < 0.5) { plantSeed(x, y); Audio.piano(Math.round(map(y, 0, W.h, 8, 0)), 0.12, 2.8); }
+      } else if (d.secondary === 'cantar' && W.now - d.noteAt > 220 && inst > 2) {
+        d.noteAt = W.now; Audio.piano(Math.round(map(y, 0, W.h, 7, -2)), rand(0.12, 0.3), 2.2);
+      } else if (d.secondary === 'cor' && inst > 2 && Math.random() < 0.2) {
+        spawnBurst(x, y, 2, { hue: rareHue(), spMax: 2, lifeMax: 1600 });
+      }
+      if (inst > 3 && Math.random() < 0.15) addRipple(x, y, 0.3, d.hue, 2.2);
     }
     dismissInvite();
   }
@@ -1163,17 +1478,30 @@
     W.px = x; W.py = y; W.idle = 0;
     W.downX = x; W.downY = y; W.dragDist = 0;
     Audio.start();
+    // escolhe um "modo" de arraste aleatório a cada gesto
+    W.drag = {
+      mode: pick(DRAG_MODES),
+      swirl: Math.random() < 0.5 ? 1 : -1,
+      hue: Math.random() < 0.3 ? rareHue() : accentHue((Math.random() * 3) | 0),
+      secondary: pick(DRAG_SECONDARIES),
+      noteAt: 0, inkAt: 0,
+    };
+    W.dragField.mode = W.drag.mode;
+    W.dragField.swirl = W.drag.swirl;
+    W.dragField.strength = 0;
     // movimento agressivo → caos
     if (W.speed > 16) W.arousal = clamp(W.arousal + 0.15, 0, 1);
     dismissInvite();
   }
   function onUp() {
-    // um toque (pouco movimento) planta uma semente; arrastar apenas cria correntes
+    // um toque (pouco movimento) dispara um efeito; arrastar molda correntes
     if (W.pDown && W.dragDist < 14 && W.now - W.lastClick > 120) {
-      plantSeed(W.px, W.py);
+      tapEffect(W.px, W.py);
       W.lastClick = W.now;
     }
     W.pDown = false;
+    W.dragField.active = false;
+    W.drag = null;
     Audio.dragMove(false, W.px);
   }
 
@@ -1181,7 +1509,7 @@
     canvas.addEventListener('mousemove', (e) => onMove(e.clientX, e.clientY));
     canvas.addEventListener('mousedown', (e) => onDown(e.clientX, e.clientY));
     window.addEventListener('mouseup', onUp);
-    canvas.addEventListener('mouseleave', () => { W.pActive = false; W.pDown = false; Audio.dragMove(false, W.px); });
+    canvas.addEventListener('mouseleave', () => { W.pActive = false; W.pDown = false; W.dragField.active = false; W.drag = null; Audio.dragMove(false, W.px); });
 
     canvas.addEventListener('touchstart', (e) => {
       const t = e.touches[0]; onDown(t.clientX, t.clientY);
@@ -1230,10 +1558,12 @@
     // --- atualização ---
     updateMood(rawDt);
     updatePalette(rawDt);
-    const dt = rawDt * W.timeScale;
+    const dt = rawDt * W.timeScale * (1 - W.breath);
     updateParticles(dt);
     updateCreatures(dt);
     updateRipples(dt);
+    updateSparks(dt);
+    updatePulses(dt);
     Events.update(dt);
     Events.maybeSpawn(rawDt);
     updateWeather(dt);
@@ -1247,8 +1577,10 @@
     Events.renderBackdrop();
     renderGarden();
     renderParticles();
+    renderSparks();
     renderCreatures();
     renderRipples();
+    renderPulses();
     Events.renderForeground();
     drawCursorGlow();
     renderWeather();
@@ -1267,10 +1599,15 @@
     if (!Audio.started || Audio.muted) return;
     nextPad -= dt;
     if (nextPad <= 0) {
-      // mais espaçado na calma, mais denso no caos
-      nextPad = lerp(9000, 2500, W.arousal) + rand(-800, 1500);
-      const i = (Math.random() * 6 | 0) + (W.dream ? 2 : 0);
-      Audio.pluck(i, lerp(0.03, 0.07, W.arousal), lerp(3.2, 1.6, W.arousal), 'sine');
+      // piano distante: notas esparsas, mais espaço na calma
+      nextPad = lerp(11000, 3500, W.arousal) + rand(-1000, 2500);
+      const oct = Math.random() < 0.5 ? 0 : 1;
+      const i = ((Math.random() * 5) | 0) + oct * (W.dream ? 6 : 5);
+      if (Math.random() < 0.25) {
+        Audio.arp([i, i + 2, i + 4], 0.12, rand(160, 260));
+      } else {
+        Audio.piano(i, lerp(0.08, 0.16, W.arousal), lerp(4.2, 2.6, W.arousal));
+      }
     }
   }
 
