@@ -191,8 +191,8 @@
 
   // ============================================================== ÁUDIO
   const Audio = (function () {
-    let ctxA = null, master = null, wet = null, drone = null, droneFilter = null;
-    let oscs = [], lfo = null, lfoGain = null, dragOsc = null, dragOsc2 = null, dragGain = null, dragFilter = null;
+    let ctxA = null, master = null, wet = null;
+    let dragOsc = null, dragOsc2 = null, dragGain = null, dragFilter = null;
     let started = false, muted = false;
     let root = 196;
     let scale = [0, 2, 4, 7, 9];
@@ -224,27 +224,7 @@
         wet = ctxA.createGain(); wet.gain.value = 0.5;
         verb.connect(wet); wet.connect(master);
 
-        // drone evolutivo
-        droneFilter = ctxA.createBiquadFilter();
-        droneFilter.type = 'lowpass';
-        droneFilter.frequency.value = 480;
-        droneFilter.Q.value = 6;
-        drone = ctxA.createGain(); drone.gain.value = 0.0;
-        droneFilter.connect(drone); drone.connect(master); drone.connect(verb);
-
-        const detunes = [-7, 0, 5];
-        for (let i = 0; i < 3; i++) {
-          const o = ctxA.createOscillator();
-          o.type = i === 0 ? 'sine' : 'triangle';
-          o.frequency.value = root / (i === 2 ? 1 : 2);
-          o.detune.value = detunes[i];
-          o.connect(droneFilter);
-          o.start();
-          oscs.push(o);
-        }
-        lfo = ctxA.createOscillator(); lfo.frequency.value = 0.05;
-        lfoGain = ctxA.createGain(); lfoGain.gain.value = 280;
-        lfo.connect(lfoGain); lfoGain.connect(droneFilter.frequency); lfo.start();
+        // (sem drone de fundo: só piano + sons de interação)
 
         // voz de arraste (sopro suave que segue o gesto — não mais áspero)
         dragOsc = ctxA.createOscillator(); dragOsc.type = 'triangle'; dragOsc.frequency.value = root;
@@ -270,7 +250,6 @@
       master.gain.cancelScheduledValues(now);
       master.gain.setValueAtTime(master.gain.value, now);
       master.gain.linearRampToValueAtTime(muted ? 0 : 0.55, now + 4);
-      drone.gain.linearRampToValueAtTime(0.12, now + 6);
     }
 
     function noteFreq(i) {
@@ -387,8 +366,6 @@
       else { scale = [0, 2, 4, 7, 9]; root = 196; }
       if (!started) return;
       const now = ctxA.currentTime;
-      droneFilter.frequency.setTargetAtTime(360 + arousal * 900, now, 1.5);
-      lfo.frequency.setTargetAtTime(0.03 + arousal * 0.25, now, 2);
       wet.gain.setTargetAtTime(0.6 - arousal * 0.3, now, 2);
     }
 
