@@ -228,6 +228,20 @@ html, body {
   text-shadow: 0 0 10px rgba(255, 90, 120, 0.6);
   transform: scale(1);
 }
+.bio-telemetry {
+  position: fixed;
+  right: clamp(16px, 3vw, 32px);
+  bottom: clamp(54px, calc(3vh + 40px), 72px);
+  font-size: 10.5px;
+  letter-spacing: 0.12em;
+  color: var(--ink-soft);
+  text-align: right;
+  pointer-events: none;
+  user-select: none;
+  z-index: 6;
+  text-shadow: 0 0 12px rgba(120, 220, 210, 0.2);
+}
+
 .bio-heart.beat { animation: heartbeat 0.4s ease-out; }
 @keyframes heartbeat {
   0% { transform: scale(1); }

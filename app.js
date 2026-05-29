@@ -515,13 +515,13 @@
         if (Math.abs(W.bio.gyroZ) > 0.002) {
           const rx = a.x - W.w * 0.5, ry = a.y - W.h * 0.5;
           const rl = Math.hypot(rx, ry) || 1;
-          const sw = clamp(W.bio.gyroZ, -1, 1) * 0.25;
+          const sw = clamp(W.bio.gyroZ, -1, 1) * 0.5;
           fx += (-ry / rl) * sw; fy += (rx / rl) * sw;
         }
-        if (W.bio.accMag > 0.02) {
+        if (W.bio.accMag > 0.015) {
           const tn = n3(a.x * 0.004, a.y * 0.004, t * 0.0003) * TAU;
-          fx += Math.cos(tn) * W.bio.accMag * 0.18;
-          fy += Math.sin(tn) * W.bio.accMag * 0.18;
+          fx += Math.cos(tn) * W.bio.accMag * 0.4;
+          fy += Math.sin(tn) * W.bio.accMag * 0.4;
         }
       }
 
@@ -1365,10 +1365,10 @@
     W.wind.x *= Math.pow(0.05, dt / 1000);
     W.wind.y *= Math.pow(0.05, dt / 1000);
     // movimento corporal (acelerômetro) sopra o ambiente
-    if (W.bio.active && W.bio.accMag > 0.02) {
+    if (W.bio.active && W.bio.accMag > 0.015) {
       const ang = W.now * 0.0013;
-      W.wind.x += Math.cos(ang) * W.bio.accMag * 0.6;
-      W.wind.y += Math.sin(ang) * W.bio.accMag * 0.6;
+      W.wind.x += Math.cos(ang) * W.bio.accMag * 1.1;
+      W.wind.y += Math.sin(ang) * W.bio.accMag * 1.1;
     }
 
     // recompensa da contemplação: ficar em calma profunda revela algo sereno

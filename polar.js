@@ -22,18 +22,34 @@
   var data = {
     connected: false, hr: 0, hrv: 0,
     accMag: 0, gyroMag: 0, gyroZ: 0,
+    accOn: false, gyroOn: false,
     beats: 0, lastBeatAt: 0,
   };
 
   var device = null;
   var accGravEMA = 4096; // ~1g em LSB (±8G / 16 bit)
   var rrBuf = [];
+  var lastTele = 0;
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   // --- DOM (botão + leitura) ---
   var btn = document.getElementById('bio-btn');
   var readout = document.getElementById('bio');
+  var tele = document.getElementById('bio-telemetry');
   var heartEl = btn ? btn.querySelector('.bio-heart') : null;
   function setStatus(t) { if (readout) readout.textContent = t; }
+  function updateTelemetry(force) {
+    if (!tele) return;
+    var now = (performance && performance.now) ? performance.now() : Date.now();
+    if (!force && now - lastTele < 250) return;
+    lastTele = now;
+    if (!data.connected) { tele.textContent = ''; return; }
+    var parts = [];
+    if (data.hr) parts.push('♥ ' + data.hr);
+    parts.push('mov ' + (data.accOn ? Math.round(data.accMag * 100) + '%' : '—'));
+    parts.push('giro ' + (data.gyroOn ? Math.round(data.gyroMag * 100) + '%' : '—'));
+    tele.textContent = parts.join('  ·  ');
+  }
   function pulseHeart() {
     if (!heartEl) return;
     heartEl.classList.remove('beat');
@@ -109,12 +125,16 @@
         accGravEMA = lerp(accGravEMA, mean, 0.05);
         var dev = 0;
         for (i = 0; i < samples.length; i++) dev += Math.abs(Math.hypot(samples[i][0], samples[i][1], samples[i][2]) - accGravEMA);
-        data.accMag = clamp((dev / samples.length) / 2200, 0, 1);
+        data.accMag = clamp((dev / samples.length) / 1200, 0, 1);
+        data.accOn = true;
+        updateTelemetry();
       } else if (type === 0x05) { // GYRO
         var sz = 0;
         for (i = 0; i < samples.length; i++) { sz += samples[i][2]; sum += Math.hypot(samples[i][0], samples[i][1], samples[i][2]); }
-        data.gyroZ = clamp((sz / samples.length) / 2000, -1, 1);
-        data.gyroMag = clamp((sum / samples.length) / 2000, 0, 1);
+        data.gyroZ = clamp((sz / samples.length) / 1200, -1, 1);
+        data.gyroMag = clamp((sum / samples.length) / 1200, 0, 1);
+        data.gyroOn = true;
+        updateTelemetry();
       }
     } catch (err) { /* frame inesperado: ignora */ }
   }
@@ -141,6 +161,7 @@
     }
     data.hr = hr;
     setStatus('♥ ' + hr);
+    updateTelemetry(true);
     // batidas: agenda pelos intervalos RR (mais fiel) ou uma por notificação
     if (rrs.length) {
       var acc = 0;
@@ -166,14 +187,18 @@
     var write = function (cmd) {
       return ctl.writeValueWithResponse ? ctl.writeValueWithResponse(cmd) : ctl.writeValue(cmd);
     };
+    // a Polar precisa de uma pausa entre comandos de medição
     try { await write(START_ACC); } catch (e) {}
+    await sleep(500);
     try { await write(START_GYRO); } catch (e) {} // só Verity Sense etc.
   }
 
   function onDisconnected() {
     data.connected = false;
+    data.accOn = false; data.gyroOn = false;
     if (btn) btn.classList.remove('on');
     setStatus('♥ conectar');
+    updateTelemetry(true);
   }
 
   async function connect() {
