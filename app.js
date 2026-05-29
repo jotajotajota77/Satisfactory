@@ -428,6 +428,10 @@
       pulse: rand(0.4, 1.5),
       ang: rand(TAU),
       spin: rand(-0.05, 0.05),
+      // ~1/3 têm movimento-base em espiral, com velocidade própria
+      spiral: Math.random() < 0.32,
+      spinRate: rand(0.03, 0.13),
+      spinDir: Math.random() < 0.5 ? 1 : -1,
       lvx: 0, lvy: 0,
     };
   }
@@ -454,10 +458,20 @@
 
     for (let p = 0; p < W.particles.length; p++) {
       const a = W.particles[p];
-      // campo de fluxo orgânico
-      const ang = n3(a.x * flow, a.y * flow, t * 0.00004) * TAU * 1.6;
-      let fx = Math.cos(ang) * 0.04;
-      let fy = Math.sin(ang) * 0.04;
+      // movimento-base: espiral (para algumas) ou campo de fluxo orgânico
+      let fx, fy;
+      if (a.spiral) {
+        const rx = a.x - W.w * 0.5, ry = a.y - W.h * 0.5;
+        const d = Math.hypot(rx, ry) || 1;
+        const rate = a.spinRate * (0.6 + 0.8 * (0.5 + 0.5 * Math.sin(t * 0.0004 + a.phase)));
+        const radial = Math.sin(t * 0.0003 + a.phase) * 0.02; // sopro pra dentro/fora → espiral
+        fx = (-ry / d) * rate * a.spinDir + (rx / d) * radial + n2(a.x * flow, a.y * flow + 9) * 0.012;
+        fy = (rx / d) * rate * a.spinDir + (ry / d) * radial + n2(a.y * flow, a.x * flow + 9) * 0.012;
+      } else {
+        const ang = n3(a.x * flow, a.y * flow, t * 0.00004) * TAU * 1.6;
+        fx = Math.cos(ang) * 0.04;
+        fy = Math.sin(ang) * 0.04;
+      }
 
       // vento global (arraste do usuário)
       fx += W.wind.x * 0.06;
