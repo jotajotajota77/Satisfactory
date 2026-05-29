@@ -530,6 +530,12 @@
           const tn = n3(a.x * 0.004, a.y * 0.004, t * 0.0003) * TAU;
           fx += Math.cos(tn) * W.bio.accMag * 0.4;
           fy += Math.sin(tn) * W.bio.accMag * 0.4;
+          // sem giroscópio (H10): o próprio movimento gera um leve redemoinho
+          if (!W.bio.gyroMag) {
+            const rx = a.x - W.w * 0.5, ry = a.y - W.h * 0.5, rl = Math.hypot(rx, ry) || 1;
+            const sw = W.bio.accMag * 0.22 * Math.sin(t * 0.0003);
+            fx += (-ry / rl) * sw; fy += (rx / rl) * sw;
+          }
         }
       }
 
