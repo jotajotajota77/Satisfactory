@@ -153,6 +153,13 @@
     }
   }
 
+  // dispara um batimento respeitando um período refratário (evita QRS duplicado)
+  function fireBeat() {
+    var now = (performance && performance.now) ? performance.now() : Date.now();
+    if (now - data.lastBeatAt < 250) return;
+    data.beats++; data.lastBeatAt = now; pulseHeart();
+  }
+
   function onHR(e) {
     var v = e.target.value;
     var flags = v.getUint8(0);
@@ -172,12 +179,10 @@
       for (var i = 0; i < rrs.length; i++) {
         pushRR(rrs[i]);
         acc += rrs[i];
-        (function (delay) {
-          setTimeout(function () { data.beats++; data.lastBeatAt = performance.now(); pulseHeart(); }, Math.max(0, delay - rrs[0]));
-        })(acc);
+        setTimeout(fireBeat, Math.max(0, acc - rrs[0]));
       }
     } else {
-      data.beats++; data.lastBeatAt = performance.now(); pulseHeart();
+      fireBeat();
     }
   }
 
