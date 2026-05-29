@@ -403,18 +403,22 @@
 
   // formas: 0 ponto · 1 anel · 2 risco · 3 faísca · 4 névoa
   const SHAPES = [0, 0, 0, 1, 1, 2, 2, 3, 4];
-  function spawnParticle(x, y) {
+  // distribuição: 30% atração · 30% repulsão · 20% indiferente · 20% aprendiz
+  function pickType() {
     const r = Math.random();
-    let type = TYPE.DRIFT;
-    if (r > 0.55 && r <= 0.72) type = TYPE.FOLLOW;
-    else if (r > 0.72 && r <= 0.9) type = TYPE.FLEE;
-    else if (r > 0.9) type = TYPE.LEARN;
+    if (r < 0.30) return TYPE.FOLLOW;
+    if (r < 0.60) return TYPE.FLEE;
+    if (r < 0.80) return TYPE.DRIFT;
+    return TYPE.LEARN;
+  }
+  function spawnParticle(x, y) {
     const isRare = Math.random() < 0.05;
     return {
       x: x === undefined ? rand(W.w) : x,
       y: y === undefined ? rand(W.h) : y,
       vx: rand(-0.2, 0.2), vy: rand(-0.2, 0.2),
-      type,
+      type: pickType(),
+      switchIn: rand(4000, 16000),
       size: rand(0.8, 2.8),
       hueSeed: (Math.random() * 3) | 0,
       hueOff: isRare ? pick([150, 180, -120]) + rand(-10, 10) : rand(-22, 22),
@@ -555,6 +559,10 @@
 
       a.phase += sec * a.pulse;
       a.ang += a.spin * sec * 60;
+
+      // o comportamento oscila: às vezes troca atração/repulsão/indiferença
+      a.switchIn -= dt;
+      if (a.switchIn <= 0) { a.type = pickType(); a.switchIn = rand(4000, 16000); }
 
       // insere na grade
       const cx = (a.x / cell) | 0, cy = (a.y / cell) | 0;
