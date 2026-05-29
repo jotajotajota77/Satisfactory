@@ -102,13 +102,14 @@
     charge: { active: false, x: 0, y: 0, t: 0 },
     idleCalm: 0,
     // biossensor (Polar)
-    bio: { active: false, hr: 0, hrNorm: 0, hrv: 0, accMag: 0, gyroMag: 0, gyroZ: 0, _seen: 0 },
+    bio: { active: false, beating: false, hr: 0, hrNorm: 0, hrv: 0, accMag: 0, gyroMag: 0, gyroZ: 0, _seen: 0 },
     // linha de osciloscópio / ECG de fundo
     scope: {
       hist: null, n: 0, step: 4, scroll: 0, head: 0,
       baseY: 0, amp: 0, alpha: 0, alphaTarget: 0,
       glitch: 0, beatClock: 9999, scopeT: 0, hue: 200,
       glitchCD: 0, explodeCD: 6000, beatDt: 11,
+      timeWarp: 1, explodePhase: 0,
     },
     // render
     repaint: true,
@@ -1056,7 +1057,7 @@
   function newScopeSample() {
     const s = W.scope;
     let v;
-    if (W.bio.active) {
+    if (W.bio.beating) {
       v = ecgTemplate(s.beatClock) + n2(s.scopeT * 0.7, 11.3) * 0.05;
     } else {
       v = n2(s.scopeT * 0.25, 3.1) * 0.6 + n2(s.scopeT * 0.9, 7.7) * 0.25 + Math.sin(s.scopeT * 0.7) * 0.12;
@@ -1068,7 +1069,10 @@
 
   function scopeBeat() { W.scope.beatClock = 0; }
   function scopeGlitch(intensity) { W.scope.glitch = Math.min(1.6, W.scope.glitch + intensity); }
-  function scopeExplode() {
+  // pedido de explosão: primeiro a linha desacelera no tempo até parar
+  function scopeExplode() { if (W.scope.explodePhase === 0) W.scope.explodePhase = 1; }
+  // a explosão em si (quando a varredura já parou)
+  function doExplodeBurst() {
     const s = W.scope;
     const count = 6 + (Math.random() * 8 | 0);
     for (let k = 0; k < count; k++) {
@@ -1078,7 +1082,7 @@
       spawnBurst(x, y, 3 + (Math.random() * 4 | 0), { hue: s.hue, spMax: 4, lifeMax: 1600 });
       if (Math.random() < 0.3 && W.garden.length < MAX_PLANTS) plantSeed(x, clamp(y, W.h * 0.2, W.h * 0.9));
     }
-    addRipple(W.w * 0.5, s.baseY, 1.2, s.hue, 1.6);
+    addRipple(W.w * 0.5, s.baseY, 1.4, s.hue, 1.6);
     Audio.chord([0, 4, 7, 11], 0.1);
     s.alpha = 0.04; s.alphaTarget = 0.04; // some e reaparece sutilmente
   }
@@ -1086,19 +1090,35 @@
   function updateScope(dt) {
     const s = W.scope;
     if (!s.hist) initScope();
-    s.hue = pal.h1;
+    // a cor do traçado oscila
+    s.hue = pal.h1 + Math.sin(W.now * 0.0007) * 50 + Math.sin(W.now * 0.00017) * 18 + W.hueDrift;
     s.beatDt = 1000 / SCOPE_RATE;
-    const baseAmp = (W.bio.active ? W.h * 0.11 : W.h * 0.07);
+
+    // distorção no tempo: desacelera até parar, explode, depois volta ao normal
+    if (s.explodePhase === 1) {
+      s.timeWarp = Math.max(0, s.timeWarp - dt / 1800);
+      s.glitch = Math.max(s.glitch, (1 - s.timeWarp) * 0.5); // treme ao desacelerar
+      if (s.timeWarp <= 0.001) { doExplodeBurst(); s.explodePhase = 2; }
+    } else if (s.explodePhase === 2) {
+      s.timeWarp = Math.min(1, s.timeWarp + dt / 1400);
+      if (s.timeWarp >= 1) s.explodePhase = 0;
+    } else {
+      s.timeWarp = Math.min(1, s.timeWarp + dt / 600);
+    }
+
+    const baseAmp = (W.bio.beating ? W.h * 0.11 : W.h * 0.07);
     const ampTarget = baseAmp * (0.55 + 0.6 * (0.5 + 0.5 * n2(W.now * 0.00004, 50))) * (1 + s.glitch * 1.4);
     s.amp = lerp(s.amp, ampTarget, 1 - Math.pow(0.2, dt / 1000));
-    const normalAlpha = W.bio.active ? 0.95 : 0.75;
+    const normalAlpha = W.bio.beating ? 0.95 : 0.75;
     s.alphaTarget = lerp(s.alphaTarget, normalAlpha, 1 - Math.pow(0.85, dt / 1000));
     s.alpha = lerp(s.alpha, s.alphaTarget, 1 - Math.pow(0.25, dt / 1000));
     s.glitch *= Math.pow(0.06, dt / 1000);
     s.glitchCD -= dt; s.explodeCD -= dt;
     if (s.glitchCD <= 0 && Math.random() < dt / 9000) { scopeGlitch(rand(0.4, 1)); s.glitchCD = rand(2500, 7000); }
-    if (s.explodeCD <= 0 && Math.random() < dt / 22000) { scopeExplode(); s.explodeCD = rand(14000, 30000); }
-    s.scroll += SCOPE_RATE * dt / 1000;
+    if (s.explodePhase === 0 && s.explodeCD <= 0 && Math.random() < dt / 22000) { scopeExplode(); s.explodeCD = rand(14000, 30000); }
+
+    // a varredura desacelera junto com o time-warp
+    s.scroll += SCOPE_RATE * dt / 1000 * s.timeWarp;
     let add = Math.floor(s.scroll); s.scroll -= add;
     if (add > s.n) add = s.n;
     for (let i = 0; i < add; i++) {
@@ -1708,9 +1728,11 @@
   }
   function pollBio() {
     const B = window.Bio;
-    if (!B || !B.data || !B.data.connected) { W.bio.active = false; return; }
+    if (!B || !B.data || !B.data.connected) { W.bio.active = false; W.bio.beating = false; return; }
     const d = B.data;
     W.bio.active = true;
+    // só há ECG/batimento se chegou batida há pouco (strap removido → para)
+    W.bio.beating = (W.now - (d.lastBeatAt || 0)) < 6000;
     W.bio.hr = d.hr || 0;
     W.bio.hrNorm = clamp((W.bio.hr - 55) / (150 - 55), 0, 1);
     W.bio.hrv = d.hrv || 0;
