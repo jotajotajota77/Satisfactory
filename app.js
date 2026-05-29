@@ -84,6 +84,7 @@
     sessionHue: 0, // cor própria desta visita (nova a cada vez)
     breath: 0,     // respiração do tempo (desacelera e volta)
     bioPulse: 0,   // batimento cardíaco a fazer o ambiente pulsar
+    bioPulseX: 0, bioPulseY: 0, // ponto (aleatório) do último batimento
     // coleções
     particles: [],
     creatures: [],
@@ -1525,9 +1526,9 @@
     grad.addColorStop(1, hsla(pal.h0, pal.sat, pal.light, 0));
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W.w, W.h);
-    // batimento cardíaco: o ambiente inteiro pulsa de leve
+    // batimento cardíaco: pulsa de leve a partir do ponto da última batida
     if (W.bioPulse > 0.01) {
-      const cx = W.w * 0.5, cy = W.h * 0.5;
+      const cx = W.bioPulseX, cy = W.bioPulseY;
       const rr = W.min * (0.2 + 0.4 * (1 - W.bioPulse));
       const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rr);
       gg.addColorStop(0, hsla(pal.h0, pal.sat, pal.light + 10, 0.12 * W.bioPulse));
@@ -1695,11 +1696,13 @@
 
   // ----------------------------------------------------- biossensor (Polar)
   function onHeartbeat() {
-    const cx = W.w * 0.5, cy = W.h * 0.5;
+    // cada batida pulsa num ponto diferente da tela
+    const cx = rand(W.w * 0.12, W.w * 0.88), cy = rand(W.h * 0.14, W.h * 0.86);
     const hue = accentHue(0);
     addPulse(cx, cy, -0.7, W.min * 0.55, hue);
     addRipple(cx, cy, 1.3, hue, 1.3);
     W.bioPulse = 1;
+    W.bioPulseX = cx; W.bioPulseY = cy;
     scopeBeat();
     Audio.heartbeat(0.3 + W.bio.hrNorm * 0.4);
   }
