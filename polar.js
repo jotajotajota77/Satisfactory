@@ -27,7 +27,9 @@
   };
 
   var device = null;
-  var accGravEMA = 4096; // ~1g em LSB (±8G / 16 bit)
+  var accGravEMA = 1000; // baseline ~1G (auto-calibrado na 1ª amostra)
+  var accInit = false;
+  var gyroScale = 1;
   var rrBuf = [];
   var lastTele = 0;
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
@@ -118,21 +120,23 @@
       var bytes = new Uint8Array(v.buffer, v.byteOffset + 10, v.byteLength - 10);
       var samples = decodeFrames(bytes, 3, frameType);
       if (!samples.length) return;
-      var i, m, sum = 0;
-      if (type === 0x02) {        // ACC
-        for (i = 0; i < samples.length; i++) sum += Math.hypot(samples[i][0], samples[i][1], samples[i][2]);
-        var mean = sum / samples.length;
-        accGravEMA = lerp(accGravEMA, mean, 0.05);
-        var dev = 0;
-        for (i = 0; i < samples.length; i++) dev += Math.abs(Math.hypot(samples[i][0], samples[i][1], samples[i][2]) - accGravEMA);
-        data.accMag = clamp((dev / samples.length) / 1200, 0, 1);
+      var i, sum = 0;
+      if (type === 0x02) {        // ACC — usa a amostra de referência (decodificação confiável)
+        var ref = samples[0];
+        var mag = Math.hypot(ref[0], ref[1], ref[2]);
+        if (!accInit) { accGravEMA = mag; accInit = true; } // calibra o repouso na 1ª amostra
+        var dev = Math.abs(mag - accGravEMA);
+        accGravEMA = lerp(accGravEMA, mag, 0.05);           // baseline ~1G acompanha a postura
+        var scale = Math.max(accGravEMA * 0.5, 1);          // normaliza por ~1G (independe da unidade)
+        data.accMag = lerp(data.accMag, clamp(dev / scale, 0, 1), 0.5);
         data.accOn = true;
         updateTelemetry();
-      } else if (type === 0x05) { // GYRO
-        var sz = 0;
+      } else if (type === 0x05) { // GYRO (não existe no H10)
+        var sz = 0, gmax = 1;
         for (i = 0; i < samples.length; i++) { sz += samples[i][2]; sum += Math.hypot(samples[i][0], samples[i][1], samples[i][2]); }
-        data.gyroZ = clamp((sz / samples.length) / 1200, -1, 1);
-        data.gyroMag = clamp((sum / samples.length) / 1200, 0, 1);
+        gyroScale = Math.max(gyroScale * 0.999, (sum / samples.length));
+        data.gyroZ = clamp((sz / samples.length) / Math.max(gyroScale, gmax), -1, 1);
+        data.gyroMag = clamp((sum / samples.length) / Math.max(gyroScale, gmax), 0, 1);
         data.gyroOn = true;
         updateTelemetry();
       }
@@ -196,6 +200,7 @@
   function onDisconnected() {
     data.connected = false;
     data.accOn = false; data.gyroOn = false;
+    data.accMag = 0; accInit = false;
     if (btn) btn.classList.remove('on');
     setStatus('♥ conectar');
     updateTelemetry(true);
@@ -203,6 +208,7 @@
 
   async function connect() {
     if (!navigator.bluetooth) { setStatus('Bluetooth indisponível'); return; }
+    accInit = false;
     try {
       setStatus('procurando…');
       device = await navigator.bluetooth.requestDevice({
