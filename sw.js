@@ -1,11 +1,14 @@
 /* Service worker do Ecossistema Emocional.
-   Necessário para instalar como app (PWA) e permite funcionar offline. */
-const CACHE = 'ecossistema-v1';
+   Necessário para instalar como app (PWA) e permite funcionar offline.
+   Estratégia: network-first (sempre busca a versão mais nova quando online,
+   caindo para o cache só offline) — assim novas publicações aparecem na hora. */
+const CACHE = 'ecossistema-v3';
 const ASSETS = [
   '.',
   'index.html',
   'style.css',
   'noise.js',
+  'polar.js',
   'app.js',
   'pwa.js',
   'manifest.webmanifest',
@@ -35,21 +38,14 @@ self.addEventListener('activate', (e) => {
 self.addEventListener('fetch', (e) => {
   const req = e.request;
   if (req.method !== 'GET' || new URL(req.url).origin !== self.location.origin) return;
-  // network-first para o HTML (sempre a versão mais recente quando online),
-  // cache-first para os demais recursos do app.
-  if (req.mode === 'navigate') {
-    e.respondWith(
-      fetch(req)
-        .then((res) => { caches.open(CACHE).then((c) => c.put(req, res.clone())); return res; })
-        .catch(() => caches.match(req).then((r) => r || caches.match('index.html')))
-    );
-    return;
-  }
+  // network-first: pega o mais recente; se offline, usa o cache.
   e.respondWith(
-    caches.match(req).then((cached) => cached || fetch(req).then((res) => {
-      const copy = res.clone();
-      caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
-      return res;
-    }).catch(() => cached))
+    fetch(req)
+      .then((res) => {
+        const copy = res.clone();
+        caches.open(CACHE).then((c) => c.put(req, copy)).catch(() => {});
+        return res;
+      })
+      .catch(() => caches.match(req).then((r) => r || (req.mode === 'navigate' ? caches.match('index.html') : undefined)))
   );
 });

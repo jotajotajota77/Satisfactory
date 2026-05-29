@@ -102,6 +102,13 @@
     idleCalm: 0,
     // biossensor (Polar)
     bio: { active: false, hr: 0, hrNorm: 0, hrv: 0, accMag: 0, gyroMag: 0, gyroZ: 0, _seen: 0 },
+    // linha de osciloscópio / ECG de fundo
+    scope: {
+      hist: null, n: 0, step: 4, scroll: 0, head: 0,
+      baseY: 0, amp: 0, alpha: 0, alphaTarget: 0,
+      glitch: 0, beatClock: 9999, scopeT: 0, hue: 200,
+      glitchCD: 0, explodeCD: 6000, beatDt: 11,
+    },
     // render
     repaint: true,
   };
@@ -131,6 +138,7 @@
     ctx.setTransform(W.dpr, 0, 0, W.dpr, 0, 0);
     W.repaint = true;
     rebalanceParticles();
+    initScope();
   }
 
   // ============================================================== PALETA
@@ -1016,6 +1024,109 @@
     }
   }
 
+  // ===================================================== LINHA / OSCILOSCÓPIO
+  const SCOPE_RATE = 90; // amostras por segundo de varredura
+
+  function initScope() {
+    const s = W.scope;
+    s.step = Math.max(3, Math.round(W.w / 360));
+    s.n = Math.ceil(W.w / s.step) + 2;
+    s.hist = new Float32Array(s.n);
+    s.head = s.n - 1;
+    s.baseY = W.h * 0.62;
+    if (s.amp === 0) s.amp = W.h * 0.06;
+    if (s.alpha === 0) { s.alpha = 0.8; s.alphaTarget = 0.8; }
+    if (!s.scopeT) s.scopeT = rand(1000);
+  }
+
+  // ECG estilizado (PQRST sintético, com licenças poéticas)
+  function ecgTemplate(t) {
+    if (t > 900) return 0;
+    const g = (c, w, a) => a * Math.exp(-((t - c) * (t - c)) / (2 * w * w));
+    return g(60, 18, 0.12) - g(110, 8, 0.12) + g(135, 7, 1.0) - g(160, 9, 0.28) + g(300, 40, 0.30);
+  }
+
+  function newScopeSample() {
+    const s = W.scope;
+    let v;
+    if (W.bio.active) {
+      v = ecgTemplate(s.beatClock) + n2(s.scopeT * 0.7, 11.3) * 0.05;
+    } else {
+      v = n2(s.scopeT * 0.25, 3.1) * 0.6 + n2(s.scopeT * 0.9, 7.7) * 0.25 + Math.sin(s.scopeT * 0.7) * 0.12;
+    }
+    if (s.glitch > 0.01) v += (Math.random() * 2 - 1) * s.glitch * 1.3 + Math.sin(s.scopeT * 6) * s.glitch * 0.6;
+    v += n2(s.scopeT * 4.0, 1.2) * 0.04;
+    return clamp(v, -3, 3);
+  }
+
+  function scopeBeat() { W.scope.beatClock = 0; }
+  function scopeGlitch(intensity) { W.scope.glitch = Math.min(1.6, W.scope.glitch + intensity); }
+  function scopeExplode() {
+    const s = W.scope;
+    const count = 6 + (Math.random() * 8 | 0);
+    for (let k = 0; k < count; k++) {
+      const x = rand(W.w);
+      const idx = (s.head + 1 + Math.round(x / s.step)) % s.n;
+      const y = s.baseY - (s.hist[idx] || 0) * s.amp * s.alpha;
+      spawnBurst(x, y, 3 + (Math.random() * 4 | 0), { hue: s.hue, spMax: 4, lifeMax: 1600 });
+      if (Math.random() < 0.3 && W.garden.length < MAX_PLANTS) plantSeed(x, clamp(y, W.h * 0.2, W.h * 0.9));
+    }
+    addRipple(W.w * 0.5, s.baseY, 1.2, s.hue, 1.6);
+    Audio.chord([0, 4, 7, 11], 0.1);
+    s.alpha = 0.04; s.alphaTarget = 0.04; // some e reaparece sutilmente
+  }
+
+  function updateScope(dt) {
+    const s = W.scope;
+    if (!s.hist) initScope();
+    s.hue = pal.h1;
+    s.beatDt = 1000 / SCOPE_RATE;
+    const baseAmp = (W.bio.active ? W.h * 0.11 : W.h * 0.07);
+    const ampTarget = baseAmp * (0.55 + 0.6 * (0.5 + 0.5 * n2(W.now * 0.00004, 50))) * (1 + s.glitch * 1.4);
+    s.amp = lerp(s.amp, ampTarget, 1 - Math.pow(0.2, dt / 1000));
+    const normalAlpha = W.bio.active ? 0.95 : 0.75;
+    s.alphaTarget = lerp(s.alphaTarget, normalAlpha, 1 - Math.pow(0.85, dt / 1000));
+    s.alpha = lerp(s.alpha, s.alphaTarget, 1 - Math.pow(0.25, dt / 1000));
+    s.glitch *= Math.pow(0.06, dt / 1000);
+    s.glitchCD -= dt; s.explodeCD -= dt;
+    if (s.glitchCD <= 0 && Math.random() < dt / 9000) { scopeGlitch(rand(0.4, 1)); s.glitchCD = rand(2500, 7000); }
+    if (s.explodeCD <= 0 && Math.random() < dt / 22000) { scopeExplode(); s.explodeCD = rand(14000, 30000); }
+    s.scroll += SCOPE_RATE * dt / 1000;
+    let add = Math.floor(s.scroll); s.scroll -= add;
+    if (add > s.n) add = s.n;
+    for (let i = 0; i < add; i++) {
+      s.beatClock += s.beatDt;
+      s.scopeT += 0.06;
+      s.head = (s.head + 1) % s.n;
+      s.hist[s.head] = newScopeSample();
+    }
+  }
+
+  function renderScope() {
+    const s = W.scope;
+    if (!s.hist || s.alpha <= 0.01) return;
+    const hue = s.hue;
+    for (let pass = 0; pass < 2; pass++) {
+      ctx.beginPath();
+      for (let i = 0; i < s.n; i++) {
+        const idx = (s.head + 1 + i) % s.n;
+        const x = i * s.step;
+        const y = s.baseY - s.hist[idx] * s.amp * s.alpha;
+        if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      if (pass === 0) {
+        ctx.globalCompositeOperation = 'lighter';
+        ctx.lineWidth = 5;
+        ctx.strokeStyle = hsla(hue, 90, 60, 0.035 * s.alpha);
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.lineWidth = 1.6;
+        ctx.strokeStyle = hsla(hue, 95, 68, 0.6 * s.alpha);
+      }
+      ctx.stroke();
+    }
+  }
+
   // =============================================================== EVENTOS
   const Events = (function () {
     let cooldowns = { eclipse: 0, mandala: 0, rare: 0, bloom: 0, ghost: 0 };
@@ -1528,6 +1639,9 @@
     if (Math.random() < 0.30) W.hueShift = clamp(W.hueShift + rand(-40, 40), -60, 60);
     if (Math.random() < 0.22) W.breath = clamp(W.breath + 0.4, 0, 0.55);
     if (Math.random() < 0.30) addRipple(x, y, 0.5, rareHue(), rand(0.8, 2.4));
+    // a linha às vezes reage ao toque (ou não)
+    if (Math.random() < 0.45) scopeGlitch(rand(0.3, 0.9));
+    else if (Math.random() < 0.18) scopeExplode();
     tapSound(x, y);
   }
 
@@ -1580,6 +1694,7 @@
     addPulse(cx, cy, -0.7, W.min * 0.55, hue);
     addRipple(cx, cy, 1.3, hue, 1.3);
     W.bioPulse = 1;
+    scopeBeat();
     Audio.heartbeat(0.3 + W.bio.hrNorm * 0.4);
   }
   function pollBio() {
@@ -1675,6 +1790,7 @@
         spawnBurst(x, y, 2, { hue: rareHue(), spMax: 2, lifeMax: 1600 });
       }
       if (inst > 3 && Math.random() < 0.15) addRipple(x, y, 0.3, d.hue, 2.2);
+      if (inst > 12 && Math.random() < 0.08) scopeGlitch(rand(0.3, 0.8));
     }
     dismissInvite();
   }
@@ -1786,6 +1902,7 @@
     updateSparks(dt);
     updatePulses(dt);
     updateVortices(dt);
+    updateScope(dt);
     Events.update(dt);
     Events.maybeSpawn(rawDt);
     updateWeather(dt);
@@ -1796,6 +1913,7 @@
       ctx.translate((Math.random() - 0.5) * W.shake, (Math.random() - 0.5) * W.shake);
     }
     drawBackground();
+    renderScope();
     Events.renderBackdrop();
     renderVortices();
     renderGarden();
