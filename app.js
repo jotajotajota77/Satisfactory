@@ -81,7 +81,9 @@
     flash: 0,
     hueDrift: 0,   // evolução lenta da paleta (menos repetitivo)
     hueShift: 0,   // empurrão transitório de cor (toques)
+    sessionHue: 0, // cor própria desta visita (nova a cada vez)
     breath: 0,     // respiração do tempo (desacelera e volta)
+    bioPulse: 0,   // batimento cardíaco a fazer o ambiente pulsar
     // coleções
     particles: [],
     creatures: [],
@@ -90,9 +92,16 @@
     ripples: [],
     sparks: [],
     pulses: [],
+    vortices: [],
     links: [],
     drag: null,
     dragField: { active: false, x: 0, y: 0, vx: 0, vy: 0, mode: 'corrente', swirl: 1, strength: 0 },
+    // toques avançados
+    downTime: 0, lastTapAt: 0, lastTapX: 0, lastTapY: 0,
+    charge: { active: false, x: 0, y: 0, t: 0 },
+    idleCalm: 0,
+    // biossensor (Polar)
+    bio: { active: false, hr: 0, hrNorm: 0, hrv: 0, accMag: 0, gyroMag: 0, gyroZ: 0, _seen: 0 },
     // render
     repaint: true,
   };
@@ -172,7 +181,7 @@
 
   function accentHue(seed) {
     const arr = [pal.h0, pal.h1, pal.h2];
-    return arr[(seed | 0) % 3] + Math.sin(seed) * 14 + W.hueDrift + W.hueShift;
+    return arr[(seed | 0) % 3] + Math.sin(seed) * 14 + W.hueDrift + W.hueShift + W.sessionHue;
   }
   // de vez em quando, uma cor inesperada (complementar / fora da paleta)
   function rareHue() {
@@ -337,6 +346,23 @@
       chord([7, 9, 11, 14], 0.08);
     }
 
+    // batida cardíaca: um "tum" grave e macio
+    function heartbeat(vel) {
+      if (!started || !ctxA || muted) return;
+      const now = ctxA.currentTime;
+      const o = ctxA.createOscillator();
+      o.type = 'sine';
+      o.frequency.setValueAtTime(108, now);
+      o.frequency.exponentialRampToValueAtTime(46, now + 0.16);
+      const g = ctxA.createGain();
+      const peak = (vel == null ? 0.4 : vel) * 0.5;
+      g.gain.setValueAtTime(0.0001, now);
+      g.gain.exponentialRampToValueAtTime(Math.max(0.001, peak), now + 0.012);
+      g.gain.exponentialRampToValueAtTime(0.0001, now + 0.5);
+      o.connect(g); g.connect(master);
+      o.start(now); o.stop(now + 0.55);
+    }
+
     function dragMove(active, x) {
       if (!started || !ctxA) return;
       const now = ctxA.currentTime;
@@ -374,7 +400,7 @@
       return muted;
     }
 
-    return { init, start, piano, arp, chord, thunder, shimmer, dragMove, setMood, toggleMute,
+    return { init, start, piano, arp, chord, thunder, shimmer, heartbeat, dragMove, setMood, toggleMute,
       get started() { return started; }, get muted() { return muted; }, send: null };
   })();
 
@@ -491,6 +517,34 @@
           else if (df.mode === 'atrair') { fx -= (dxd / dd) * 0.45 * fall; fy -= (dyd / dd) * 0.45 * fall; }
           else if (df.mode === 'espalhar') { fx += (dxd / dd) * 0.55 * fall; fy += (dyd / dd) * 0.55 * fall; }
           else if (df.mode === 'tinta') { fx += (-(dxd / dd) * 0.12 + df.vx * 0.02) * fall; fy += (-(dyd / dd) * 0.12 + df.vy * 0.02) * fall; }
+        }
+      }
+
+      // vórtices persistentes: atraem e giram (pequenas galáxias)
+      for (let q = 0; q < W.vortices.length; q++) {
+        const v = W.vortices[q];
+        const dxv = a.x - v.x, dyv = a.y - v.y;
+        const dv = Math.sqrt(dxv * dxv + dyv * dyv) || 1;
+        if (dv < v.radius) {
+          const env = clamp(Math.min(v.age, v.dur - v.age) / 2000, 0, 1);
+          const fall = (1 - dv / v.radius) * env;
+          fx += (-dyv / dv) * v.swirl * 0.5 * fall - (dxv / dv) * 0.12 * fall;
+          fy += (dxv / dv) * v.swirl * 0.5 * fall - (dyv / dv) * 0.12 * fall;
+        }
+      }
+
+      // biossensor: giroscópio cria redemoinho global; acelerômetro turbulência
+      if (W.bio.active) {
+        if (Math.abs(W.bio.gyroZ) > 0.002) {
+          const rx = a.x - W.w * 0.5, ry = a.y - W.h * 0.5;
+          const rl = Math.hypot(rx, ry) || 1;
+          const sw = clamp(W.bio.gyroZ, -1, 1) * 0.25;
+          fx += (-ry / rl) * sw; fy += (rx / rl) * sw;
+        }
+        if (W.bio.accMag > 0.02) {
+          const tn = n3(a.x * 0.004, a.y * 0.004, t * 0.0003) * TAU;
+          fx += Math.cos(tn) * W.bio.accMag * 0.18;
+          fy += Math.sin(tn) * W.bio.accMag * 0.18;
         }
       }
 
@@ -940,6 +994,51 @@
     }
   }
 
+  // ========================================================= VÓRTICES (galáxias)
+  function addVortex(x, y, swirl, hue) {
+    W.vortices.push({
+      x, y, age: 0, dur: rand(9000, 16000),
+      radius: W.min * rand(0.28, 0.42),
+      swirl: swirl || (Math.random() < 0.5 ? 1 : -1),
+      hue: hue == null ? accentHue((Math.random() * 3) | 0) : hue,
+      spin: rand(TAU),
+    });
+    if (W.vortices.length > 4) W.vortices.shift();
+    addRipple(x, y, 1, hue, 1.0);
+    Audio.chord([0, 4, 7, 11], 0.1);
+  }
+  function updateVortices(dt) {
+    for (let i = W.vortices.length - 1; i >= 0; i--) {
+      const v = W.vortices[i];
+      v.age += dt;
+      v.spin += (v.swirl * 0.0015) * dt;
+      if (v.age > v.dur) W.vortices.splice(i, 1);
+    }
+  }
+  function renderVortices() {
+    ctx.globalCompositeOperation = 'lighter';
+    for (const v of W.vortices) {
+      const k = clamp(Math.min(v.age, v.dur - v.age) / 2500, 0, 1);
+      const arms = 2;
+      ctx.lineWidth = 1;
+      for (let a = 0; a < arms; a++) {
+        ctx.strokeStyle = hsla(v.hue + a * 16, pal.sat, pal.light + 6, 0.10 * k);
+        ctx.beginPath();
+        for (let s = 0; s <= 60; s++) {
+          const tt = s / 60;
+          const ar = tt * v.radius;
+          const aa = v.spin + a * Math.PI + v.swirl * tt * 7;
+          const px = v.x + Math.cos(aa) * ar, py = v.y + Math.sin(aa) * ar;
+          if (s === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+      }
+      // núcleo
+      ctx.fillStyle = hsla(v.hue, pal.sat, pal.light + 12, 0.16 * k);
+      ctx.beginPath(); ctx.arc(v.x, v.y, 6, 0, TAU); ctx.fill();
+    }
+  }
+
   // =============================================================== EVENTOS
   const Events = (function () {
     let cooldowns = { eclipse: 0, mandala: 0, rare: 0, bloom: 0, ghost: 0 };
@@ -1228,6 +1327,7 @@
     W.hueDrift = Math.sin(W.now * 0.00002) * 20 + Math.sin(W.now * 0.000071) * 10;
     W.hueShift *= Math.pow(0.2, dt / 1000);
     W.breath *= Math.pow(0.12, dt / 1000);
+    W.bioPulse *= Math.pow(0.012, dt / 1000);
     if (!W.pDown) W.dragField.active = false;
 
     // idle
@@ -1246,7 +1346,12 @@
     if (W.idle > 1500) W.energy *= Math.pow(0.6, dt / 1000);
 
     // excitação de longo prazo (a "personalidade" que persiste)
-    const aTarget = W.energy;
+    let aTarget = W.energy;
+    if (W.bio.active) {
+      // a frequência cardíaca define um "humor de base"; o movimento corporal agita
+      const bioFloor = lerp(0.10, 0.95, W.bio.hrNorm) + W.bio.accMag * 0.35;
+      aTarget = clamp(Math.max(aTarget, bioFloor), 0, 1);
+    }
     const rate = aTarget > W.arousal ? 0.6 : 0.12; // sobe rápido, desce devagar
     W.arousal += (aTarget - W.arousal) * (1 - Math.pow(1 - rate, dt / 1000));
     W.arousal = clamp(W.arousal, 0, 1);
@@ -1282,6 +1387,25 @@
     // vento decai
     W.wind.x *= Math.pow(0.05, dt / 1000);
     W.wind.y *= Math.pow(0.05, dt / 1000);
+    // movimento corporal (acelerômetro) sopra o ambiente
+    if (W.bio.active && W.bio.accMag > 0.02) {
+      const ang = W.now * 0.0013;
+      W.wind.x += Math.cos(ang) * W.bio.accMag * 0.6;
+      W.wind.y += Math.sin(ang) * W.bio.accMag * 0.6;
+    }
+
+    // recompensa da contemplação: ficar em calma profunda revela algo sereno
+    if (W.arousal < 0.18 && W.idle > 4000 && !W.pDown) {
+      W.idleCalm += dt;
+      if (W.idleCalm > 22000) {
+        W.idleCalm = -30000; // descanso antes de repetir
+        if (W.garden.length > 1 && Math.random() < 0.5) Events.spawn('bloom', { dur: 9000 });
+        else Events.spawn('aurora', { dur: 24000 });
+        showWhisper('quietude', 6000);
+      }
+    } else {
+      W.idleCalm = Math.max(0, W.idleCalm - dt * 0.5);
+    }
 
     Audio.setMood(W.energy, W.arousal, W.dream);
   }
@@ -1307,6 +1431,31 @@
     grad.addColorStop(1, hsla(pal.h0, pal.sat, pal.light, 0));
     ctx.fillStyle = grad;
     ctx.fillRect(0, 0, W.w, W.h);
+    // batimento cardíaco: o ambiente inteiro pulsa de leve
+    if (W.bioPulse > 0.01) {
+      const cx = W.w * 0.5, cy = W.h * 0.5;
+      const rr = W.min * (0.2 + 0.4 * (1 - W.bioPulse));
+      const gg = ctx.createRadialGradient(cx, cy, 0, cx, cy, rr);
+      gg.addColorStop(0, hsla(pal.h0, pal.sat, pal.light + 10, 0.12 * W.bioPulse));
+      gg.addColorStop(1, hsla(pal.h0, pal.sat, pal.light, 0));
+      ctx.fillStyle = gg;
+      ctx.fillRect(0, 0, W.w, W.h);
+    }
+  }
+
+  function renderCharge() {
+    if (!W.charge.active) return;
+    // source-over: cresce sem saturar enquanto segura
+    ctx.globalCompositeOperation = 'source-over';
+    const p = W.charge.t;
+    const r = lerp(10, 62, p) * (1 + 0.1 * Math.sin(W.now * 0.02));
+    const hue = accentHue(0);
+    const g = ctx.createRadialGradient(W.charge.x, W.charge.y, 0, W.charge.x, W.charge.y, r);
+    g.addColorStop(0, hsla(hue, pal.sat, pal.light + 14, 0.5));
+    g.addColorStop(0.5, hsla(hue, pal.sat, pal.light, 0.18));
+    g.addColorStop(1, hsla(hue, pal.sat, pal.light, 0));
+    ctx.fillStyle = g;
+    ctx.beginPath(); ctx.arc(W.charge.x, W.charge.y, r, 0, TAU); ctx.fill();
   }
 
   function drawCursorGlow() {
@@ -1361,10 +1510,13 @@
     }
   }
 
-  const TAP_PRIMARIES = ['semente', 'semente', 'semente', 'estrela', 'pulso', 'eco', 'broto', 'cardume'];
+  const TAP_PRIMARIES = ['semente', 'semente', 'semente', 'estrela', 'pulso', 'eco', 'broto', 'cardume', 'galaxia'];
   function tapEffect(x, y) {
     const hue = Math.random() < 0.25 ? rareHue() : accentHue((Math.random() * 3) | 0);
     switch (pick(TAP_PRIMARIES)) {
+      case 'galaxia':
+        addVortex(x, y, Math.random() < 0.5 ? 1 : -1, hue);
+        break;
       case 'semente':
         plantSeed(x, y);
         break;
@@ -1421,6 +1573,70 @@
     }
   }
 
+  // um ser nasce onde você toca duas vezes
+  function birthCreature(x, y) {
+    const c = spawnCreature(false);
+    for (const seg of c.body) { seg.x = x; seg.y = y; }
+    c.born = W.now; c.life = 0;
+    W.creatures.push(c);
+    spawnBurst(x, y, 14, { hue: c.hue, spMax: 4, lifeMax: 1500 });
+    addRipple(x, y, 0.8, c.hue, 1.6);
+    Audio.arp([0, 4, 7], 0.32, 90);
+  }
+
+  // segurar carrega energia; ao soltar, libera uma explosão proporcional
+  function chargeRelease(x, y, power) {
+    const hue = accentHue((Math.random() * 3) | 0);
+    const n = Math.round(lerp(14, 70, power));
+    spawnBurst(x, y, n, { hue, spMin: 1, spMax: 3 + power * 9, sizeMax: 2.4 + power * 2, lifeMax: 1400 + power * 1800 });
+    addPulse(x, y, -1.2 - power * 1.6, W.min * (0.2 + power * 0.4), hue);
+    for (let i = 0; i < 2 + (power * 3 | 0); i++) addRipple(x, y, 0.6 + power, hue + i * 14, 1 + i * 0.6);
+    if (power > 0.7) { plantSeed(x, y); bloomNearby(x, y, W.min * 0.3); }
+    Audio.chord([0, 4, 7, 11, 14], 0.12 + power * 0.1);
+    W.arousal = clamp(W.arousal + power * 0.2, 0, 1);
+  }
+
+  // ----------------------------------------------------- biossensor (Polar)
+  function onHeartbeat() {
+    const cx = W.w * 0.5, cy = W.h * 0.5;
+    const hue = accentHue(0);
+    addPulse(cx, cy, -0.7, W.min * 0.55, hue);
+    addRipple(cx, cy, 1.3, hue, 1.3);
+    W.bioPulse = 1;
+    Audio.heartbeat(0.3 + W.bio.hrNorm * 0.4);
+  }
+  function pollBio() {
+    const B = window.Bio;
+    if (!B || !B.data || !B.data.connected) { W.bio.active = false; return; }
+    const d = B.data;
+    W.bio.active = true;
+    W.bio.hr = d.hr || 0;
+    W.bio.hrNorm = clamp((W.bio.hr - 55) / (150 - 55), 0, 1);
+    W.bio.hrv = d.hrv || 0;
+    W.bio.accMag = lerp(W.bio.accMag, d.accMag || 0, 0.2);
+    W.bio.gyroMag = lerp(W.bio.gyroMag, d.gyroMag || 0, 0.2);
+    W.bio.gyroZ = lerp(W.bio.gyroZ, d.gyroZ || 0, 0.2);
+    if (d.beats - W.bio._seen > 6) W.bio._seen = d.beats - 1;
+    while (W.bio._seen < d.beats) { W.bio._seen++; onHeartbeat(); }
+  }
+
+  // long-press: acompanha o carregamento enquanto o dedo fica parado
+  function updateCharge() {
+    if (W.pDown && W.dragDist < 16) {
+      const held = W.now - W.downTime;
+      if (held > 450) {
+        W.charge.active = true;
+        W.charge.x = W.px; W.charge.y = W.py;
+        W.charge.t = clamp((held - 450) / 2500, 0, 1);
+        if (Math.random() < 0.5) {
+          const ang = rand(TAU), r = lerp(70, 14, W.charge.t);
+          spawnBurst(W.charge.x + Math.cos(ang) * r, W.charge.y + Math.sin(ang) * r, 1,
+            { hue: accentHue(0), dir: ang + Math.PI, spread: 0.2, spMin: 0.6, spMax: 1.6, lifeMax: 700 });
+        }
+      }
+    }
+  }
+
   const DRAG_MODES = ['corrente', 'vortice', 'atrair', 'espalhar', 'tinta'];
   const DRAG_SECONDARIES = ['faiscar', 'plantar', 'cantar', 'cor', null, null];
 
@@ -1443,6 +1659,18 @@
       // arraste: cada modo molda o mundo de forma diferente
       W.dragDist += inst;
       const d = W.drag;
+      // acumula curvatura para detectar um gesto circular (→ galáxia)
+      if (inst > 1.5) {
+        const dir = Math.atan2(ndy, ndx);
+        if (d.lastDir != null) {
+          let da = dir - d.lastDir;
+          while (da > Math.PI) da -= TAU;
+          while (da < -Math.PI) da += TAU;
+          d.turn += da;
+        }
+        d.lastDir = dir;
+        d.cx += x; d.cy += y; d.n++;
+      }
       W.dragField.active = true;
       W.dragField.x = x; W.dragField.y = y;
       W.dragField.vx = W.pvx; W.dragField.vy = W.pvy;
@@ -1476,7 +1704,7 @@
   function onDown(x, y) {
     W.pDown = true; W.pActive = true;
     W.px = x; W.py = y; W.idle = 0;
-    W.downX = x; W.downY = y; W.dragDist = 0;
+    W.downX = x; W.downY = y; W.dragDist = 0; W.downTime = W.now;
     Audio.start();
     // escolhe um "modo" de arraste aleatório a cada gesto
     W.drag = {
@@ -1485,6 +1713,7 @@
       hue: Math.random() < 0.3 ? rareHue() : accentHue((Math.random() * 3) | 0),
       secondary: pick(DRAG_SECONDARIES),
       noteAt: 0, inkAt: 0,
+      turn: 0, lastDir: null, cx: 0, cy: 0, n: 0,
     };
     W.dragField.mode = W.drag.mode;
     W.dragField.swirl = W.drag.swirl;
@@ -1494,12 +1723,23 @@
     dismissInvite();
   }
   function onUp() {
-    // um toque (pouco movimento) dispara um efeito; arrastar molda correntes
-    if (W.pDown && W.dragDist < 14 && W.now - W.lastClick > 120) {
-      tapEffect(W.px, W.py);
+    const d = W.drag;
+    if (W.charge.active) {
+      // soltou após segurar → explosão proporcional
+      chargeRelease(W.px, W.py, W.charge.t);
+      W.charge.active = false;
+    } else if (W.pDown && W.dragDist < 14 && W.now - W.lastClick > 120) {
+      // toque curto → efeito; toque duplo → nasce um ser
+      const dbl = (W.now - W.lastTapAt < 360) && Math.hypot(W.px - W.lastTapX, W.py - W.lastTapY) < 60;
+      if (dbl) { birthCreature(W.px, W.py); W.lastTapAt = 0; }
+      else { tapEffect(W.px, W.py); W.lastTapAt = W.now; W.lastTapX = W.px; W.lastTapY = W.py; }
       W.lastClick = W.now;
+    } else if (d && d.n > 4 && Math.abs(d.turn) > 5.0 && W.dragDist > W.min * 0.3) {
+      // gesto circular → uma pequena galáxia nasce no centro
+      addVortex(d.cx / d.n, d.cy / d.n, Math.sign(d.turn) || 1);
     }
     W.pDown = false;
+    W.charge.active = false;
     W.dragField.active = false;
     W.drag = null;
     Audio.dragMove(false, W.px);
@@ -1509,7 +1749,9 @@
     canvas.addEventListener('mousemove', (e) => onMove(e.clientX, e.clientY));
     canvas.addEventListener('mousedown', (e) => onDown(e.clientX, e.clientY));
     window.addEventListener('mouseup', onUp);
-    canvas.addEventListener('mouseleave', () => { W.pActive = false; W.pDown = false; W.dragField.active = false; W.drag = null; Audio.dragMove(false, W.px); });
+    canvas.addEventListener('mouseleave', () => { W.pActive = false; W.pDown = false; W.charge.active = false; W.dragField.active = false; W.drag = null; Audio.dragMove(false, W.px); });
+    const bioBtn = document.getElementById('bio-btn');
+    if (bioBtn) bioBtn.addEventListener('click', () => Audio.start());
 
     canvas.addEventListener('touchstart', (e) => {
       const t = e.touches[0]; onDown(t.clientX, t.clientY);
@@ -1556,6 +1798,8 @@
     W.now = ts;
 
     // --- atualização ---
+    pollBio();
+    updateCharge();
     updateMood(rawDt);
     updatePalette(rawDt);
     const dt = rawDt * W.timeScale * (1 - W.breath);
@@ -1564,6 +1808,7 @@
     updateRipples(dt);
     updateSparks(dt);
     updatePulses(dt);
+    updateVortices(dt);
     Events.update(dt);
     Events.maybeSpawn(rawDt);
     updateWeather(dt);
@@ -1575,6 +1820,7 @@
     }
     drawBackground();
     Events.renderBackdrop();
+    renderVortices();
     renderGarden();
     renderParticles();
     renderSparks();
@@ -1582,6 +1828,7 @@
     renderRipples();
     renderPulses();
     Events.renderForeground();
+    renderCharge();
     drawCursorGlow();
     renderWeather();
     ctx.globalCompositeOperation = 'source-over';
@@ -1614,6 +1861,7 @@
   // ================================================================ INIT
   function init() {
     resize();
+    W.sessionHue = rand(-40, 40); // cada visita tem sua própria cor
     window.addEventListener('resize', resize);
     document.addEventListener('visibilitychange', () => {
       if (document.hidden) saveMem();
@@ -1641,6 +1889,19 @@
       const msg = sinceLast > 36e5 ? 'você voltou' : 'continuamos de onde paramos';
       setTimeout(() => showWhisper(msg, 6000), 2200);
     }
+
+    // ritual de chegada: a cada visita, algo novo começa a existir
+    setTimeout(() => {
+      const ax = rand(W.w * 0.2, W.w * 0.8), ay = rand(W.h * 0.32, W.h * 0.72);
+      plantSeed(ax, ay);
+      addRipple(ax, ay, 1.2, accentHue(0), 1.2);
+      if (Math.random() < 0.6) {
+        birthCreature(rand(W.w * 0.3, W.w * 0.7), rand(W.h * 0.3, W.h * 0.7));
+      } else {
+        Events.spawn('aurora', { dur: 18000 });
+      }
+      setTimeout(() => showWhisper(returning ? 'algo novo nasce' : 'bem-vindo', 6000), 1200);
+    }, 3200);
 
     requestAnimationFrame(frame);
   }

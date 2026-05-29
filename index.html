@@ -31,6 +31,11 @@
     <span class="sound-dot"></span>
   </button>
 
+  <!-- Conectar sensor Polar (FC, acelerômetro, giroscópio) -->
+  <button id="bio-btn" class="bio-btn" type="button" aria-label="conectar sensor Polar">
+    <span class="bio-heart">&#9829;</span><span id="bio" class="bio-readout">conectar</span>
+  </button>
+
   <!-- Caixinha de instalação (PWA), aparece após 30s -->
   <div id="install" class="install-card" role="dialog" aria-label="instalar como aplicativo">
     <img class="install-icon" src="icon-192.png" alt="" width="46" height="46" />
@@ -49,6 +54,7 @@
   </noscript>
 
   <script src="noise.js"></script>
+  <script src="polar.js"></script>
   <script src="app.js"></script>
   <script src="pwa.js"></script>
 </body>
