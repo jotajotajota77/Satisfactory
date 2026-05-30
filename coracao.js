@@ -38,12 +38,26 @@
   let calibrationExtensions = 0;
   let rrMin = Infinity, rrMax = -Infinity;
   let beatPulse = 0;
-  let lastNoteIdx = -1, lastNoteAt = -9e9;
+  let lastNoteKey = -1, lastNoteAt = -9e9;
+  let longNotes = false; // toggle: nota normal × nota longa
   const recentBeats = []; // { rr, time }
 
-  // ---- escala: pentatônica em duas oitavas
-  const SCALE = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21];
-  const ROOT = 196; // ~G3
+  // ---- piano completo: 88 teclas (A0 a C8), cromático
+  const KEY_COUNT = 88;
+  const A4_KEY = 48; // A0 = 0, A4 = 48
+  function isBlackKey(n) { const m = n % 12; return m === 1 || m === 4 || m === 6 || m === 9 || m === 11; }
+  function keyToFreq(key) { return 440 * Math.pow(2, (key - A4_KEY) / 12); }
+  function rrToKey(rr) {
+    if (rrMax - rrMin < 1) return Math.floor(KEY_COUNT / 2);
+    const t = clamp((rrMax - rr) / (rrMax - rrMin), 0, 1);
+    return clamp(Math.round(t * (KEY_COUNT - 1)), 0, KEY_COUNT - 1);
+  }
+  const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
+  function keyName(key) {
+    const idx = (key + 9) % 12;
+    const oct = Math.floor((key + 9) / 12);
+    return NOTE_NAMES[idx] + oct;
+  }
 
   // ---- áudio (piano de feltro)
   let ctxA = null, master = null, verbBus = null, audioStarted = false;
@@ -107,7 +121,18 @@
   const statusEl = document.getElementById('status');
   const readoutEl = document.getElementById('readout');
   const connectBtn = document.getElementById('connect');
+  const durToggle = document.getElementById('dur-toggle');
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
+  function setLongNotes(on) {
+    longNotes = !!on;
+    if (durToggle) {
+      durToggle.classList.toggle('on', longNotes);
+      durToggle.textContent = longNotes ? 'nota longa' : 'nota normal';
+      durToggle.setAttribute('aria-pressed', longNotes ? 'true' : 'false');
+    }
+  }
+  if (durToggle) durToggle.addEventListener('click', () => setLongNotes(!longNotes));
+  setLongNotes(false);
 
   // ---- conexão
   connectBtn.addEventListener('click', async () => {
@@ -161,14 +186,15 @@
       // se o RR estourar os limites, a escala se expande em tempo real
       if (rr < rrMin) rrMin = rr;
       if (rr > rrMax) rrMax = rr;
-      let t;
-      if (rrMax - rrMin < 1) t = 0.5;
-      else t = (rrMax - rr) / (rrMax - rrMin); // 0 = grave (RR longo), 1 = aguda (RR curto)
-      const idx = clamp(Math.floor(t * SCALE.length), 0, SCALE.length - 1);
-      const freq = ROOT * Math.pow(2, SCALE[idx] / 12);
-      const vel = 0.34 + 0.42 * t;
-      piano(freq, vel, 3.0);
-      lastNoteIdx = idx;
+      const key = rrToKey(rr);
+      const freq = keyToFreq(key);
+      const tPos = key / (KEY_COUNT - 1); // 0 grave, 1 aguda
+      const vel = 0.32 + 0.45 * tPos;
+      const dur = longNotes
+        ? lerp(11, 5, tPos)             // nota longa: graves duram muito
+        : lerp(4.6, 1.7, tPos);         // nota normal: graves ressoam mais
+      piano(freq, vel, dur);
+      lastNoteKey = key;
       lastNoteAt = performance.now();
     }
   }
@@ -191,7 +217,8 @@
         const max = isFinite(rrMax) ? (rrMax | 0) : '--';
         readoutEl.textContent = `♥ ${B.data.hr || '--'} bpm · coletando ${Math.ceil(left / 1000)}s · ${min}–${max} ms`;
       } else if (state === STATE.PLAYING) {
-        readoutEl.textContent = `♥ ${B.data.hr || '--'} bpm · ${rrMin | 0}–${rrMax | 0} ms`;
+        const note = lastNoteKey >= 0 ? ' · ' + keyName(lastNoteKey) : '';
+        readoutEl.textContent = `♥ ${B.data.hr || '--'} bpm${note} · ${rrMin | 0}–${rrMax | 0} ms`;
       } else {
         readoutEl.textContent = '';
       }
@@ -231,10 +258,7 @@
     ctx.fillStyle = 'rgba(4, 8, 12, 0.32)';
     ctx.fillRect(0, 0, W, H);
     drawHeart();
-    if (state !== STATE.IDLE) {
-      drawScale();
-      drawTimeline();
-    }
+    if (state !== STATE.IDLE) drawPiano();
     if (state === STATE.CALIBRATING) drawCalibrationRing(ts);
   }
 
@@ -262,37 +286,48 @@
     ctx.restore();
   }
 
-  function drawScale() {
-    const x = W - clamp(W * 0.07, 40, 72);
-    const top = H * 0.18, bot = H * 0.82;
-    const n = SCALE.length;
-    for (let i = 0; i < n; i++) {
-      const tNorm = i / (n - 1);
-      const y = lerp(top, bot, tNorm);
-      const scaleIdx = (n - 1) - i; // topo = nota mais aguda
-      const isLast = scaleIdx === lastNoteIdx;
-      const age = (performance.now() - lastNoteAt) / 900;
-      const glow = isLast ? Math.max(0, 1 - age) : 0;
-      const r = 4 + glow * 5.5;
-      ctx.beginPath(); ctx.arc(x, y, r, 0, TAU);
-      ctx.fillStyle = `hsla(180, 80%, ${52 + glow * 28}%, ${0.22 + glow * 0.7})`;
-      ctx.fill();
+  function drawPiano() {
+    const padX = 8;
+    const whiteCount = 52; // 88 teclas têm 52 brancas
+    const whiteWidth = Math.max(2.4, (W - padX * 2) / whiteCount);
+    const whiteHeight = clamp(Math.min(W, H) * 0.11, 60, 110);
+    const blackWidth = whiteWidth * 0.6;
+    const blackHeight = whiteHeight * 0.62;
+    const yBottom = H - 10;
+    const yTop = yBottom - whiteHeight;
+    const now = performance.now();
+    const litAge = (now - lastNoteAt) / 1100;
+    const litT = lastNoteKey >= 0 ? Math.max(0, 1 - litAge) : 0;
+    // teclas brancas
+    let wi = 0;
+    for (let k = 0; k < KEY_COUNT; k++) {
+      if (!isBlackKey(k)) {
+        const x = padX + wi * whiteWidth;
+        const lit = (k === lastNoteKey) ? litT : 0;
+        const tn = k / (KEY_COUNT - 1);
+        const hue = 198 - tn * 90; // grave (azul) → aguda (verde-amarelo)
+        ctx.fillStyle = lit > 0
+          ? `hsla(${hue}, 78%, ${62 + lit * 24}%, ${0.55 + lit * 0.4})`
+          : 'rgba(230, 240, 240, 0.16)';
+        ctx.fillRect(x, yTop, Math.max(1, whiteWidth - 1), whiteHeight);
+        wi++;
+      }
     }
-  }
-
-  function drawTimeline() {
-    if (recentBeats.length === 0) return;
-    const x0 = W * 0.12, x1 = W * 0.88;
-    const yBase = H * 0.92;
-    const range = Math.max(1, rrMax - rrMin);
-    for (let i = 0; i < recentBeats.length; i++) {
-      const t = i / (recentBeats.length - 1 || 1);
-      const x = lerp(x0, x1, t);
-      const b = recentBeats[i];
-      const tn = clamp((rrMax - b.rr) / range, 0, 1);
-      const h = 4 + tn * 32;
-      ctx.fillStyle = `hsla(${180 + tn * 30}, 70%, ${52 + tn * 10}%, 0.45)`;
-      ctx.fillRect(x, yBase - h, 3, h);
+    // teclas pretas (por cima)
+    wi = 0;
+    for (let k = 0; k < KEY_COUNT; k++) {
+      if (isBlackKey(k)) {
+        const x = padX + wi * whiteWidth - blackWidth / 2;
+        const lit = (k === lastNoteKey) ? litT : 0;
+        const tn = k / (KEY_COUNT - 1);
+        const hue = 198 - tn * 90;
+        ctx.fillStyle = lit > 0
+          ? `hsla(${hue}, 82%, ${56 + lit * 24}%, ${0.85 + lit * 0.15})`
+          : 'rgba(8, 14, 18, 0.92)';
+        ctx.fillRect(x, yTop, blackWidth, blackHeight);
+      } else {
+        wi++;
+      }
     }
   }
 
