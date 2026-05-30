@@ -2,7 +2,7 @@
    Necessário para instalar como app (PWA) e permite funcionar offline.
    Estratégia: network-first (sempre busca a versão mais nova quando online,
    caindo para o cache só offline) — assim novas publicações aparecem na hora. */
-const CACHE = 'ecossistema-v3';
+const CACHE = 'ecossistema-v4';
 const ASSETS = [
   '.',
   'index.html',
@@ -11,6 +11,9 @@ const ASSETS = [
   'polar.js',
   'app.js',
   'pwa.js',
+  'coracao.html',
+  'coracao.css',
+  'coracao.js',
   'manifest.webmanifest',
   'icon-192.png',
   'icon-512.png',

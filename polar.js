@@ -24,6 +24,7 @@
     accMag: 0, gyroMag: 0, gyroZ: 0,
     accOn: false, gyroOn: false,
     beats: 0, lastBeatAt: 0,
+    lastRR: 0, beatQueue: [],
   };
 
   var device = null;
@@ -154,10 +155,13 @@
   }
 
   // dispara um batimento respeitando um período refratário (evita QRS duplicado)
-  function fireBeat() {
+  function fireBeat(rr) {
     var now = (performance && performance.now) ? performance.now() : Date.now();
     if (now - data.lastBeatAt < 250) return;
     data.beats++; data.lastBeatAt = now; pulseHeart();
+    if (rr && rr > 0) data.lastRR = rr;
+    data.beatQueue.push({ rr: rr || 0, t: now });
+    if (data.beatQueue.length > 256) data.beatQueue.shift();
   }
 
   function onHR(e) {
@@ -179,10 +183,12 @@
       for (var i = 0; i < rrs.length; i++) {
         pushRR(rrs[i]);
         acc += rrs[i];
-        setTimeout(fireBeat, Math.max(0, acc - rrs[0]));
+        (function (rrVal, delay) {
+          setTimeout(function () { fireBeat(rrVal); }, Math.max(0, delay - rrs[0]));
+        })(rrs[i], acc);
       }
     } else {
-      fireBeat();
+      fireBeat(0);
     }
   }
 
@@ -206,6 +212,7 @@
     data.connected = false;
     data.accOn = false; data.gyroOn = false;
     data.accMag = 0; accInit = false;
+    data.lastRR = 0; data.beatQueue.length = 0;
     if (btn) btn.classList.remove('on');
     setStatus('♥ conectar');
     updateTelemetry(true);

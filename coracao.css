@@ -1,0 +1,99 @@
+:root {
+  --bg: #04080c;
+  --ink: rgba(190, 235, 225, 0.78);
+  --ink-soft: rgba(190, 235, 225, 0.34);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--bg);
+  color: var(--ink);
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+  -webkit-font-smoothing: antialiased;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#stage {
+  position: fixed;
+  inset: 0;
+  display: block;
+  width: 100%;
+  height: 100%;
+  touch-action: none;
+}
+
+.status {
+  position: fixed;
+  top: clamp(22px, 7vh, 60px);
+  left: 50%;
+  transform: translateX(-50%);
+  font-size: clamp(12px, 1.8vw, 16px);
+  letter-spacing: 0.34em;
+  text-transform: lowercase;
+  color: var(--ink-soft);
+  text-align: center;
+  pointer-events: none;
+  user-select: none;
+  text-shadow: 0 0 18px rgba(120, 220, 210, 0.18);
+  transition: color 0.8s ease;
+}
+
+.readout {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: clamp(64px, 12vh, 120px);
+  font-size: clamp(11px, 1.4vw, 14px);
+  letter-spacing: 0.26em;
+  text-transform: lowercase;
+  color: var(--ink-soft);
+  pointer-events: none;
+  user-select: none;
+  min-height: 1.2em;
+}
+
+.connect {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: clamp(180px, 26vmin, 300px);
+  height: clamp(180px, 26vmin, 300px);
+  background: transparent;
+  border: none;
+  cursor: pointer;
+  border-radius: 50%;
+  outline: none;
+  transition: opacity 0.6s ease;
+}
+.connect:focus-visible {
+  outline: 1px solid rgba(120, 220, 210, 0.4);
+  outline-offset: 6px;
+}
+.connect.gone { pointer-events: none; opacity: 0; }
+
+.link-eco {
+  position: fixed;
+  top: clamp(14px, 3vh, 28px);
+  left: clamp(14px, 3vw, 28px);
+  font-size: 11px;
+  letter-spacing: 0.32em;
+  color: var(--ink-soft);
+  text-decoration: none;
+  text-transform: lowercase;
+  transition: color 0.4s ease;
+  z-index: 5;
+}
+.link-eco:hover { color: var(--ink); }
+
+.nojs {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: rgba(180, 240, 230, 0.6);
+}
