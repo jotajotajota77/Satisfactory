@@ -26,7 +26,6 @@
     catch (e) { return {}; }
   }
   const mem = loadMem();
-  if (typeof mem.seed !== 'number') mem.seed = (Math.random() * 0xffffffff) >>> 0;
   if (typeof mem.visits !== 'number') mem.visits = 0;
   if (typeof mem.arousalBase !== 'number') mem.arousalBase = 0.18;
   if (!Array.isArray(mem.garden)) mem.garden = [];
@@ -34,6 +33,9 @@
   mem.visits += 1;
   const sinceLast = mem.lastVisit ? Date.now() - mem.lastVisit : 0;
   mem.lastVisit = Date.now();
+  // semente do mundo é nova a cada abertura (o "como" do mundo é redesenhado),
+  // a memória (jardim, personalidade) continua persistindo separadamente.
+  const sessionSeed = (Math.random() * 0xffffffff) >>> 0;
 
   function saveMem() {
     try {
@@ -48,10 +50,10 @@
   }
 
   // ------------------------------------------------------------- ambiente
-  const field = Noise.create(mem.seed);
+  const field = Noise.create(sessionSeed);
   const n2 = field.noise2D;
   const n3 = field.noise3D;
-  const rngVisit = Noise.mulberry32(mem.seed ^ 0x9e3779b9);
+  const rngVisit = Noise.mulberry32(sessionSeed ^ 0x9e3779b9);
 
   const isTouch = window.matchMedia && window.matchMedia('(pointer: coarse)').matches;
   const reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
