@@ -19,35 +19,10 @@
   const dist2 = (ax, ay, bx, by) => { const dx = ax - bx, dy = ay - by; return dx * dx + dy * dy; };
   const hsla = (h, s, l, a) => `hsla(${h.toFixed(1)},${s.toFixed(1)}%,${l.toFixed(1)}%,${a})`;
 
-  // -------------------------------------------------------------- memória
-  const MEM_KEY = 'ecossistema.emocional.v1';
-  function loadMem() {
-    try { return JSON.parse(localStorage.getItem(MEM_KEY)) || {}; }
-    catch (e) { return {}; }
-  }
-  const mem = loadMem();
-  if (typeof mem.visits !== 'number') mem.visits = 0;
-  if (typeof mem.arousalBase !== 'number') mem.arousalBase = 0.18;
-  if (!Array.isArray(mem.garden)) mem.garden = [];
-  const returning = mem.visits > 0;
-  mem.visits += 1;
-  const sinceLast = mem.lastVisit ? Date.now() - mem.lastVisit : 0;
-  mem.lastVisit = Date.now();
-  // semente do mundo é nova a cada abertura (o "como" do mundo é redesenhado),
-  // a memória (jardim, personalidade) continua persistindo separadamente.
+  // -------------------------------------------------------------- vida
+  // Nada persiste entre as visitas: cada abertura é um mundo do zero.
   const sessionSeed = (Math.random() * 0xffffffff) >>> 0;
-
-  function saveMem() {
-    try {
-      mem.arousalBase = clamp(lerp(mem.arousalBase, W.arousal, 0.35), 0, 1);
-      mem.garden = W.garden.slice(-MAX_PLANTS).map((p) => ({
-        nx: +p.nx.toFixed(4), ny: +p.ny.toFixed(4),
-        t: p.plantedWall, seed: p.seed, hue: Math.round(p.hue),
-      }));
-      mem.lastVisit = Date.now();
-      localStorage.setItem(MEM_KEY, JSON.stringify(mem));
-    } catch (e) { /* armazenamento indisponível: o mundo simplesmente esquece */ }
-  }
+  const INITIAL_AROUSAL = 0.18;
 
   // ------------------------------------------------------------- ambiente
   const field = Noise.create(sessionSeed);
@@ -73,7 +48,7 @@
     downX: 0, downY: 0, dragDist: 0,
     // estado emocional
     energy: 0,                 // curto prazo
-    arousal: mem.arousalBase,  // longo prazo (personalidade)
+    arousal: INITIAL_AROUSAL,  // longo prazo (personalidade), reinicia a cada visita
     climate: 'calmaria',
     climateHold: 0,
     dream: false,
@@ -116,15 +91,6 @@
     // render
     repaint: true,
   };
-
-  // restaura jardim plantado em visitas anteriores (tempo absoluto de relógio)
-  for (const g of mem.garden) {
-    W.garden.push({
-      nx: g.nx, ny: g.ny, seed: g.seed >>> 0, hue: g.hue,
-      plantedWall: typeof g.t === 'number' ? g.t : Date.now() - 2 * GROW_MS,
-      struct: null,
-    });
-  }
 
   // --------------------------------------------------------------- canvas
   const canvas = document.getElementById('stage');
@@ -2013,12 +1979,6 @@
     resize();
     W.sessionHue = rand(-40, 40); // cada visita tem sua própria cor
     window.addEventListener('resize', resize);
-    document.addEventListener('visibilitychange', () => {
-      if (document.hidden) saveMem();
-    });
-    window.addEventListener('pagehide', saveMem);
-    window.addEventListener('beforeunload', saveMem);
-    setInterval(saveMem, 15000);
 
     rebalanceParticles();
     initCreatures();
@@ -2034,13 +1994,7 @@
     setTimeout(() => inviteEl.classList.add('show'), 600);
     setTimeout(() => { if (!inviteDismissed) dismissInvite(); }, 9000);
 
-    // boas-vindas de retorno
-    if (returning) {
-      const msg = sinceLast > 36e5 ? 'você voltou' : 'continuamos de onde paramos';
-      setTimeout(() => showWhisper(msg, 6000), 2200);
-    }
-
-    // ritual de chegada: a cada visita, algo novo começa a existir
+    // ritual de chegada: a cada abertura, algo novo começa a existir
     setTimeout(() => {
       const ax = rand(W.w * 0.2, W.w * 0.8), ay = rand(W.h * 0.32, W.h * 0.72);
       plantSeed(ax, ay);
@@ -2050,7 +2004,7 @@
       } else {
         Events.spawn('aurora', { dur: 18000 });
       }
-      setTimeout(() => showWhisper(returning ? 'algo novo nasce' : 'bem-vindo', 6000), 1200);
+      setTimeout(() => showWhisper('bem-vindo', 6000), 1200);
     }, 3200);
 
     requestAnimationFrame(frame);
