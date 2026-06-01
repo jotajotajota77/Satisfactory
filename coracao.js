@@ -40,7 +40,19 @@
   let beatPulse = 0;
   let lastNoteKey = -1, lastNoteAt = -9e9;
   let longNotes = false; // toggle: nota normal × nota longa
-  const recentBeats = []; // { rr, time }
+  // ---- filtragem de RR (ignora outliers/extrassístoles)
+  const RR_HARD_MIN = 300;  // < 300 ms (> 200 bpm): ruído
+  const RR_HARD_MAX = 2000; // > 2000 ms (< 30 bpm): batida perdida / artefato
+  const RR_BUF_MAX = 80;    // últimos ~80 RRs aceitos (rolante)
+  const rrBuf = [];
+  function updateRangeFromBuf() {
+    if (rrBuf.length < 2) return;
+    const sorted = rrBuf.slice().sort(function (a, b) { return a - b; });
+    const lo = Math.max(0, Math.round((sorted.length - 1) * 0.05));
+    const hi = Math.min(sorted.length - 1, Math.round((sorted.length - 1) * 0.95));
+    rrMin = sorted[lo];
+    rrMax = sorted[hi];
+  }
 
   // ---- piano completo: 88 teclas (A0 a C8), cromático
   const KEY_COUNT = 88;
@@ -48,7 +60,7 @@
   function isBlackKey(n) { const m = n % 12; return m === 1 || m === 4 || m === 6 || m === 9 || m === 11; }
   function keyToFreq(key) { return 440 * Math.pow(2, (key - A4_KEY) / 12); }
   function rrToKey(rr) {
-    if (rrMax - rrMin < 1) return Math.floor(KEY_COUNT / 2);
+    if (!isFinite(rrMin) || !isFinite(rrMax) || rrMax - rrMin < 1) return Math.floor(KEY_COUNT / 2);
     const t = clamp((rrMax - rr) / (rrMax - rrMin), 0, 1);
     return clamp(Math.round(t * (KEY_COUNT - 1)), 0, KEY_COUNT - 1);
   }
@@ -159,7 +171,7 @@
     CALIBRATION_MS = 30000;
     calibrationExtensions = 0;
     rrMin = Infinity; rrMax = -Infinity;
-    recentBeats.length = 0;
+    rrBuf.length = 0;
     setStatus('afinando ao seu coração');
   }
   function beginPlaying() {
@@ -177,22 +189,22 @@
   function handleBeat(rr) {
     beatPulse = 1;
     if (rr <= 0) return; // só usamos batidas com RR para a música
-    recentBeats.push({ rr, time: performance.now() });
-    if (recentBeats.length > 96) recentBeats.shift();
-    if (state === STATE.CALIBRATING) {
-      if (rr < rrMin) rrMin = rr;
-      if (rr > rrMax) rrMax = rr;
-    } else if (state === STATE.PLAYING) {
-      // se o RR estourar os limites, a escala se expande em tempo real
-      if (rr < rrMin) rrMin = rr;
-      if (rr > rrMax) rrMax = rr;
-      const key = rrToKey(rr);
+    // descarta RRs fora da faixa fisiológica (ruído / batida perdida)
+    if (rr < RR_HARD_MIN || rr > RR_HARD_MAX) return;
+    rrBuf.push(rr);
+    if (rrBuf.length > RR_BUF_MAX) rrBuf.shift();
+    // limites = percentil 5 / 95 do buffer (outliers/extrassístoles ignorados)
+    updateRangeFromBuf();
+    if (state === STATE.PLAYING) {
+      // o RR é clampado nos limites P5/P95 para mapear na escala
+      const rrC = clamp(rr, rrMin, rrMax);
+      const key = rrToKey(rrC);
       const freq = keyToFreq(key);
-      const tPos = key / (KEY_COUNT - 1); // 0 grave, 1 aguda
+      const tPos = key / (KEY_COUNT - 1);
       const vel = 0.32 + 0.45 * tPos;
       const dur = longNotes
-        ? lerp(11, 5, tPos)             // nota longa: graves duram muito
-        : lerp(4.6, 1.7, tPos);         // nota normal: graves ressoam mais
+        ? lerp(11, 5, tPos)
+        : lerp(4.6, 1.7, tPos);
       piano(freq, vel, dur);
       lastNoteKey = key;
       lastNoteAt = performance.now();
@@ -235,7 +247,7 @@
     poll();
     if (state === STATE.CALIBRATING && ts - calibrationStart >= CALIBRATION_MS) {
       const hasRange = isFinite(rrMin) && isFinite(rrMax) && rrMax - rrMin >= 1;
-      if (recentBeats.length >= 5 && hasRange) {
+      if (rrBuf.length >= 5 && hasRange) {
         beginPlaying();
       } else if (calibrationExtensions < 3) {
         CALIBRATION_MS += 15000;
