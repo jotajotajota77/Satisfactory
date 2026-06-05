@@ -87,6 +87,7 @@
       glitch: 0, beatClock: 9999, scopeT: 0, hue: 200,
       glitchCD: 0, explodeCD: 6000, beatDt: 11,
       timeWarp: 1, explodePhase: 0,
+      ecgReadIdx: -1,
     },
     // render
     repaint: true,
@@ -1047,13 +1048,15 @@
   function newScopeSample() {
     const s = W.scope;
     let v;
-    if (W.bio.beating) {
-      v = ecgTemplate(s.beatClock) + n2(s.scopeT * 0.7, 11.3) * 0.05;
+    if (W.bio.active) {
+      // conectado mas ECG bruto ainda não chegou: PQRST sintetizado (sem ruído)
+      v = ecgTemplate(s.beatClock) + n2(s.scopeT * 0.7, 11.3) * 0.025;
     } else {
+      // desconectado: osciloscópio de ruído
       v = n2(s.scopeT * 0.25, 3.1) * 0.6 + n2(s.scopeT * 0.9, 7.7) * 0.25 + Math.sin(s.scopeT * 0.7) * 0.12;
     }
     if (s.glitch > 0.01) v += (Math.random() * 2 - 1) * s.glitch * 1.3 + Math.sin(s.scopeT * 6) * s.glitch * 0.6;
-    v += n2(s.scopeT * 4.0, 1.2) * 0.04;
+    if (!W.bio.active) v += n2(s.scopeT * 4.0, 1.2) * 0.04;
     return clamp(v, -3, 3);
   }
 
@@ -1096,10 +1099,10 @@
       s.timeWarp = Math.min(1, s.timeWarp + dt / 600);
     }
 
-    const baseAmp = (W.bio.beating ? W.h * 0.11 : W.h * 0.07);
+    const baseAmp = (W.bio.active ? W.h * 0.11 : W.h * 0.07);
     const ampTarget = baseAmp * (0.55 + 0.6 * (0.5 + 0.5 * n2(W.now * 0.00004, 50))) * (1 + s.glitch * 1.4);
     s.amp = lerp(s.amp, ampTarget, 1 - Math.pow(0.2, dt / 1000));
-    const normalAlpha = W.bio.beating ? 0.95 : 0.75;
+    const normalAlpha = W.bio.active ? 0.95 : 0.75;
     s.alphaTarget = lerp(s.alphaTarget, normalAlpha, 1 - Math.pow(0.85, dt / 1000));
     s.alpha = lerp(s.alpha, s.alphaTarget, 1 - Math.pow(0.25, dt / 1000));
     s.glitch *= Math.pow(0.06, dt / 1000);
@@ -1107,15 +1110,39 @@
     if (s.glitchCD <= 0 && Math.random() < dt / 9000) { scopeGlitch(rand(0.4, 1)); s.glitchCD = rand(2500, 7000); }
     if (s.explodePhase === 0 && s.explodeCD <= 0 && Math.random() < dt / 22000) { scopeExplode(); s.explodeCD = rand(14000, 30000); }
 
-    // a varredura desacelera junto com o time-warp
-    s.scroll += SCOPE_RATE * dt / 1000 * s.timeWarp;
-    let add = Math.floor(s.scroll); s.scroll -= add;
-    if (add > s.n) add = s.n;
-    for (let i = 0; i < add; i++) {
-      s.beatClock += s.beatDt;
-      s.scopeT += 0.06;
-      s.head = (s.head + 1) % s.n;
-      s.hist[s.head] = newScopeSample();
+    // ECG real do Polar (quando disponível): puxa as amostras já vindas do device
+    const bio = window.Bio && window.Bio.data;
+    const ecgActive = !!(W.bio.active && bio && bio.ecgOn && bio.ecgBuf);
+    if (ecgActive) {
+      const writeHead = bio.ecgHead;
+      const BUF_LEN = bio.ecgBuf.length;
+      if (s.ecgReadIdx == null || s.ecgReadIdx < 0) s.ecgReadIdx = writeHead;
+      let toPush = (writeHead - s.ecgReadIdx + BUF_LEN) % BUF_LEN;
+      // se ficou muito atrás (ex.: após uma explosão/timeWarp), pula pra ver só o mais recente
+      if (toPush > s.n) {
+        s.ecgReadIdx = (writeHead - s.n + BUF_LEN) % BUF_LEN;
+        toPush = s.n;
+      }
+      if (s.timeWarp < 0.001) toPush = 0; // pausa junto com a desaceleração da explosão
+      for (let i = 0; i < toPush; i++) {
+        s.head = (s.head + 1) % s.n;
+        let v = bio.ecgBuf[s.ecgReadIdx];
+        if (s.glitch > 0.01) v += (Math.random() * 2 - 1) * s.glitch * 0.7;
+        s.hist[s.head] = clamp(v, -3, 3);
+        s.ecgReadIdx = (s.ecgReadIdx + 1) % BUF_LEN;
+      }
+    } else {
+      // ECG bruto não disponível: usa newScopeSample (ECG sintetizado se conectado, ruído se desconectado)
+      s.ecgReadIdx = -1; // reseta pra próxima vez que voltar
+      s.scroll += SCOPE_RATE * dt / 1000 * s.timeWarp;
+      let add = Math.floor(s.scroll); s.scroll -= add;
+      if (add > s.n) add = s.n;
+      for (let i = 0; i < add; i++) {
+        s.beatClock += s.beatDt;
+        s.scopeT += 0.06;
+        s.head = (s.head + 1) % s.n;
+        s.hist[s.head] = newScopeSample();
+      }
     }
   }
 

@@ -15,16 +15,20 @@
   var PMD_SERVICE = 'fb005c80-02e7-f387-1cad-8acd2d8df0c8';
   var PMD_CTRL = 'fb005c81-02e7-f387-1cad-8acd2d8df0c8';
   var PMD_DATA = 'fb005c82-02e7-f387-1cad-8acd2d8df0c8';
-  // start ACC (200Hz, 16 bit, ±8G) e GYRO (52Hz, 16 bit, 2000 dps)
+  // start ACC (200Hz, 16 bit, ±8G), ECG (130Hz, 14 bit) e GYRO (52Hz, 16 bit, 2000 dps)
   var START_ACC = new Uint8Array([0x02, 0x02, 0x00, 0x01, 0xC8, 0x00, 0x01, 0x01, 0x10, 0x00, 0x02, 0x01, 0x08, 0x00]);
+  var START_ECG = new Uint8Array([0x02, 0x00, 0x00, 0x01, 0x82, 0x00, 0x01, 0x01, 0x0E, 0x00]);
   var START_GYRO = new Uint8Array([0x02, 0x05, 0x00, 0x01, 0x34, 0x00, 0x01, 0x01, 0x10, 0x00, 0x02, 0x01, 0xD0, 0x07]);
 
+  var ECG_BUF_LEN = 1024; // ~7.9s a 130 Hz
   var data = {
     connected: false, hr: 0, hrv: 0,
     accMag: 0, gyroMag: 0, gyroZ: 0,
     accOn: false, gyroOn: false,
     beats: 0, lastBeatAt: 0,
     lastRR: 0, beatQueue: [],
+    // ECG bruto vindo do Polar (normalizado em ±~1 por auto-escala)
+    ecgBuf: new Float32Array(ECG_BUF_LEN), ecgHead: 0, ecgOn: false,
   };
 
   var device = null;
@@ -33,6 +37,16 @@
   var gyroScale = 1;
   var rrBuf = [];
   var lastTele = 0;
+  var ecgMax = 500; // auto-escala do ECG (µV)
+  // filtro de onda T: pico fantasma é descartado e somado ao próximo RR
+  var pendingRR = 0;
+  var pendingAt = 0;
+  function isLikelyTWave(rr) {
+    if (rrBuf.length < 6) return false;
+    var sorted = rrBuf.slice().sort(function (a, b) { return a - b; });
+    var median = sorted[Math.floor(sorted.length / 2)];
+    return rr < median * 0.55; // < 55% da mediana → fantasma
+  }
   function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
 
   // --- DOM (botão + leitura) ---
@@ -77,23 +91,33 @@
     return v;
   }
 
-  // decodifica frames PMD (raw ou delta) em amostras [ch0,ch1,ch2,...]
-  function decodeFrames(bytes, channels, frameType) {
+  // decodifica frames PMD (raw ou delta) em amostras [ch0,ch1,ch2,...].
+  // bytesPerSample (= bytes da amostra de referência): 2 para ACC/GYRO, 3 para ECG.
+  function decodeFrames(bytes, channels, frameType, bytesPerSample) {
+    bytesPerSample = bytesPerSample || 2;
     var out = [];
     var dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    function readSample(o) {
+      if (bytesPerSample === 3) {
+        var v = dv.getUint8(o) | (dv.getUint8(o + 1) << 8) | (dv.getUint8(o + 2) << 16);
+        if (v & 0x800000) v -= 0x1000000;
+        return v;
+      }
+      return dv.getInt16(o, true);
+    }
     if (frameType === 0) {
-      var step = channels * 2;
+      var step = channels * bytesPerSample;
       for (var o = 0; o + step <= bytes.byteLength; o += step) {
         var s = [];
-        for (var c = 0; c < channels; c++) s.push(dv.getInt16(o + c * 2, true));
+        for (var c = 0; c < channels; c++) s.push(readSample(o + c * bytesPerSample));
         out.push(s);
       }
       return out;
     }
-    // delta: amostra de referência (int16 por canal) + blocos comprimidos
+    // delta: amostra de referência (bytesPerSample por canal) + blocos comprimidos
     var off = 0;
     var ref = [];
-    for (var rc = 0; rc < channels; rc++) { ref.push(dv.getInt16(off, true)); off += 2; }
+    for (var rc = 0; rc < channels; rc++) { ref.push(readSample(off)); off += bytesPerSample; }
     out.push(ref.slice());
     var bit = off * 8;
     var total = bytes.byteLength * 8;
@@ -119,10 +143,24 @@
       var type = v.getUint8(0);
       var frameType = v.getUint8(9);
       var bytes = new Uint8Array(v.buffer, v.byteOffset + 10, v.byteLength - 10);
-      var samples = decodeFrames(bytes, 3, frameType);
+      // canais e bytes/amostra por tipo
+      var channels = (type === 0x00) ? 1 : 3;
+      var bps = (type === 0x00) ? 3 : 2; // ECG = int24, ACC/GYRO = int16
+      var samples = decodeFrames(bytes, channels, frameType, bps);
       if (!samples.length) return;
       var i, sum = 0;
-      if (type === 0x02) {        // ACC — usa a amostra de referência (decodificação confiável)
+      if (type === 0x00) {        // ECG: empurra amostras normalizadas para o ring buffer
+        for (i = 0; i < samples.length; i++) {
+          var raw = samples[i][0];
+          var absR = Math.abs(raw);
+          if (absR > ecgMax) ecgMax = absR;
+          else ecgMax = ecgMax * 0.9995 + absR * 0.0005;
+          var scale = Math.max(ecgMax, 80);
+          data.ecgBuf[data.ecgHead] = raw / scale;
+          data.ecgHead = (data.ecgHead + 1) % ECG_BUF_LEN;
+        }
+        data.ecgOn = true;
+      } else if (type === 0x02) {        // ACC — usa a amostra de referência (decodificação confiável)
         var ref = samples[0];
         var mag = Math.hypot(ref[0], ref[1], ref[2]);
         if (!accInit) { accGravEMA = mag; accInit = true; } // calibra o repouso na 1ª amostra
@@ -154,10 +192,26 @@
     }
   }
 
-  // dispara um batimento respeitando um período refratário (evita QRS duplicado)
-  function fireBeat(rr) {
+  // dispara um batimento. Refratário evita QRS duplicado e o filtro de onda T
+  // detecta picos fantasma (RR < 55% da mediana) — guarda esse RR e soma ao
+  // próximo batimento real, recuperando o RR verdadeiro.
+  function fireBeat(rr, isArtifact) {
     var now = (performance && performance.now) ? performance.now() : Date.now();
-    if (now - data.lastBeatAt < 250) return;
+    if (now - data.lastBeatAt < 280) return; // ~214 bpm máx (refratário leve)
+    // expira pendente esquecido
+    if (pendingRR > 0 && now - pendingAt > 4000) { pendingRR = 0; }
+    // onda T → guarda e não dispara batimento fantasma
+    if (isArtifact && rr > 0) {
+      pendingRR += rr;
+      pendingAt = now;
+      return;
+    }
+    // soma RR pendente (de uma onda T descartada anteriormente)
+    if (pendingRR > 0 && rr > 0) {
+      rr += pendingRR;
+      pendingRR = 0;
+      if (rr > 2200) return; // somou demais → algo errado, descarta
+    }
     data.beats++; data.lastBeatAt = now; pulseHeart();
     if (rr && rr > 0) data.lastRR = rr;
     data.beatQueue.push({ rr: rr || 0, t: now });
@@ -181,14 +235,16 @@
     if (rrs.length) {
       var acc = 0;
       for (var i = 0; i < rrs.length; i++) {
-        pushRR(rrs[i]);
-        acc += rrs[i];
-        (function (rrVal, delay) {
-          setTimeout(function () { fireBeat(rrVal); }, Math.max(0, delay - rrs[0]));
-        })(rrs[i], acc);
+        var rrV = rrs[i];
+        var art = isLikelyTWave(rrV);
+        if (!art) pushRR(rrV); // só "RRs reais" entram no buffer de HRV
+        acc += rrV;
+        (function (rrVal, isArt, delay) {
+          setTimeout(function () { fireBeat(rrVal, isArt); }, Math.max(0, delay - rrs[0]));
+        })(rrV, art, acc);
       }
     } else {
-      fireBeat(0);
+      fireBeat(0, false);
     }
   }
 
@@ -205,6 +261,8 @@
     // a Polar precisa de uma pausa entre comandos de medição
     try { await write(START_ACC); } catch (e) {}
     await sleep(500);
+    try { await write(START_ECG); } catch (e) {} // só faz efeito no H10/Sense ECG
+    await sleep(500);
     try { await write(START_GYRO); } catch (e) {} // só Verity Sense etc.
   }
 
@@ -213,6 +271,8 @@
     data.accOn = false; data.gyroOn = false;
     data.accMag = 0; accInit = false;
     data.lastRR = 0; data.beatQueue.length = 0;
+    data.ecgOn = false; data.ecgHead = 0; ecgMax = 500;
+    pendingRR = 0; pendingAt = 0;
     if (btn) btn.classList.remove('on');
     setStatus('♥ conectar');
     updateTelemetry(true);
