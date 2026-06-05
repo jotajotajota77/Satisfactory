@@ -87,7 +87,7 @@
       glitch: 0, beatClock: 9999, scopeT: 0, hue: 200,
       glitchCD: 0, explodeCD: 6000, beatDt: 11,
       timeWarp: 1, explodePhase: 0,
-      ecgReadIdx: -1,
+      ecgReadIdx: -1, ecgReadAccum: 0,
     },
     // render
     repaint: true,
@@ -1116,14 +1116,33 @@
     if (ecgActive) {
       const writeHead = bio.ecgHead;
       const BUF_LEN = bio.ecgBuf.length;
-      if (s.ecgReadIdx == null || s.ecgReadIdx < 0) s.ecgReadIdx = writeHead;
-      let toPush = (writeHead - s.ecgReadIdx + BUF_LEN) % BUF_LEN;
-      // se ficou muito atrás (ex.: após uma explosão/timeWarp), pula pra ver só o mais recente
-      if (toPush > s.n) {
-        s.ecgReadIdx = (writeHead - s.n + BUF_LEN) % BUF_LEN;
-        toPush = s.n;
+      // O Polar manda em lotes BLE (~500 ms entre lotes). Pra não pular nem
+      // travar, mantemos um adiantamento (~700 ms) e avançamos o ponteiro de
+      // leitura em ritmo constante (130 Hz), independente da chegada dos lotes.
+      const ECG_RATE = 130; // Hz nativos do H10
+      const TARGET_LAG = 90;  // ~692 ms de buffer entre leitura e escrita
+      const MAX_LAG = 260;    // ~2 s: estourou? recupera saltando pro target
+      if (s.ecgReadIdx < 0) {
+        s.ecgReadIdx = (writeHead - TARGET_LAG + BUF_LEN) % BUF_LEN;
+        s.ecgReadAccum = 0;
       }
-      if (s.timeWarp < 0.001) toPush = 0; // pausa junto com a desaceleração da explosão
+      s.ecgReadAccum += ECG_RATE * dt / 1000 * s.timeWarp;
+      let toPush = Math.floor(s.ecgReadAccum);
+      s.ecgReadAccum -= toPush;
+      const available = (writeHead - s.ecgReadIdx + BUF_LEN) % BUF_LEN;
+      if (toPush > available) {
+        // BLE atrasou: consome o que tem e espera (sem rajada)
+        toPush = available;
+        s.ecgReadAccum = 0;
+      }
+      if (available > MAX_LAG) {
+        // ficou muito atrás (pausa/timeWarp): pula pro adiantamento alvo
+        s.ecgReadIdx = (writeHead - TARGET_LAG + BUF_LEN) % BUF_LEN;
+        s.ecgReadAccum = 0;
+        toPush = 0;
+      }
+      if (s.timeWarp < 0.001) toPush = 0; // congela junto com a desaceleração da explosão
+      toPush = Math.min(toPush, s.n);
       for (let i = 0; i < toPush; i++) {
         s.head = (s.head + 1) % s.n;
         let v = bio.ecgBuf[s.ecgReadIdx];
@@ -1133,7 +1152,7 @@
       }
     } else {
       // ECG bruto não disponível: usa newScopeSample (ECG sintetizado se conectado, ruído se desconectado)
-      s.ecgReadIdx = -1; // reseta pra próxima vez que voltar
+      s.ecgReadIdx = -1; s.ecgReadAccum = 0;
       s.scroll += SCOPE_RATE * dt / 1000 * s.timeWarp;
       let add = Math.floor(s.scroll); s.scroll -= add;
       if (add > s.n) add = s.n;
