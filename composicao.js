@@ -109,6 +109,7 @@
   const playBtn = document.getElementById('play-btn');
   const downloadBtn = document.getElementById('download-btn');
   const restartBtn = document.getElementById('restart-btn');
+  const scoreEl = document.getElementById('score');
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
 
   // ---- conexão + gravação
@@ -354,6 +355,12 @@
     }
 
     // acordes de fundo (um por frase)
+    const CHORD_NAMES = {
+      major:  ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'B°'],
+      minor:  ['Cm', 'D°', 'E♭', 'Fm', 'Gm', 'A♭', 'B♭'],
+      dorian: ['Cm', 'Dm', 'E♭', 'F', 'Gm', 'A°', 'B♭'],
+    };
+    const chordNames = CHORD_NAMES[mode] || CHORD_NAMES.major;
     const chordBackings = [];
     for (let p = 0; p < numPhrases; p++) {
       const startBeat = p * phraseLen;
@@ -364,7 +371,7 @@
       const dur = t1 - t0;
       const deg = chordForPhrase(p);
       const tones = chordTones(deg).map(s => rootMidi + s - 12); // uma oitava abaixo
-      chordBackings.push({ time: t0, duration: dur, tones });
+      chordBackings.push({ time: t0, duration: dur, tones, name: chordNames[deg] || '' });
     }
 
     return {
@@ -401,6 +408,11 @@
       downloadBtn.style.display = '';
       restartBtn.style.display = '';
       updateReadout();
+      // renderiza e mostra a partitura visual
+      if (scoreEl) {
+        scoreEl.innerHTML = generateScoreSVG(composition);
+        scoreEl.classList.remove('hidden');
+      }
     }, 1500);
   }
   function updateReadout() {
@@ -463,6 +475,7 @@
   restartBtn.addEventListener('click', () => {
     stopPlayback();
     composition = null;
+    if (scoreEl) { scoreEl.classList.add('hidden'); scoreEl.innerHTML = ''; }
     if (window.Bio && window.Bio.data && window.Bio.data.connected) {
       beginRecording();
     } else {
@@ -538,18 +551,169 @@
     for (let i = 0; i < trk.length; i++) file.push(trk[i]);
     return new Uint8Array(file);
   }
-  downloadBtn.addEventListener('click', () => {
-    if (!composition) return;
-    const midi = generateMIDI(composition);
-    const blob = new Blob([midi], { type: 'audio/midi' });
+  // ---- partitura SVG (visual, bonitinha)
+  // posição na pauta da clave de sol: 0 = linha de baixo (E4), 8 = linha de cima (F5)
+  function midiToStaffPos(midi) {
+    const LETTER = [0, 0, 1, 1, 2, 3, 3, 4, 4, 5, 5, 6];
+    const note = ((midi % 12) + 12) % 12;
+    const oct = Math.floor(midi / 12) - 1;
+    return (oct - 4) * 7 + LETTER[note] - 2;
+  }
+  // posições das bemóis na pauta (ordem padrão Bb Eb Ab Db Gb Cb Fb)
+  const FLAT_ORDER = ['B', 'E', 'A', 'D', 'G', 'C', 'F'];
+  const FLAT_POS = { B: 4, E: 8, A: 5, D: 7, G: 3, C: 6, F: 1 };
+  function keyFlats(mode) {
+    if (mode === 'minor') return ['B', 'E', 'A']; // C menor: 3 bemóis
+    if (mode === 'dorian') return ['B', 'E'];      // C dórico: 2 bemóis
+    return [];                                      // C maior: nenhum
+  }
+  function generateScoreSVG(comp) {
+    const PAGE_W = 800;
+    const MARGIN = 40;
+    const STAFF_LH = 7;                // distância entre linhas adjacentes
+    const STAFF_H = STAFF_LH * 4;       // 5 linhas = 4 espaços
+    const STAFF_GAP = 64;               // distância entre pautas consecutivas
+    const TITLE_BAND = 86;
+    const PREFIX_W = 78;                // espaço pra clave + armadura + fórmula
+    const MEASURES_PER_LINE = 4;
+    const BEATS_PER_MEASURE = 4;
+
+    // agrupa em compassos
+    const measures = [];
+    for (let i = 0; i < comp.melody.length; i += BEATS_PER_MEASURE) {
+      const notes = comp.melody.slice(i, i + BEATS_PER_MEASURE);
+      if (!notes.length) continue;
+      const phraseIdx = Math.floor(i / comp.phraseLen);
+      const chord = comp.chordBackings[Math.min(phraseIdx, comp.chordBackings.length - 1)];
+      measures.push({ notes, chord });
+    }
+    const numLines = Math.max(1, Math.ceil(measures.length / MEASURES_PER_LINE));
+    const PAGE_H = TITLE_BAND + numLines * STAFF_GAP + 50;
+
+    const flats = keyFlats(comp.mode);
+    const out = [];
+    out.push('<svg xmlns="http://www.w3.org/2000/svg" width="' + PAGE_W + '" height="' + PAGE_H + '" viewBox="0 0 ' + PAGE_W + ' ' + PAGE_H + '" font-family="\'Iowan Old Style\', Palatino, Georgia, serif">');
+    out.push('<rect width="100%" height="100%" fill="#fdfcf8"/>');
+    // título e subtítulo
+    out.push('<text x="' + (PAGE_W / 2) + '" y="38" text-anchor="middle" font-size="22" font-weight="600" fill="#1a1a1a">Sua música</text>');
+    out.push('<text x="' + (PAGE_W / 2) + '" y="58" text-anchor="middle" font-size="12" fill="#444" font-style="italic">composta a partir do seu coração</text>');
+    // marca de tempo (♩ = bpm)
+    out.push('<text x="' + (MARGIN + 4) + '" y="' + (TITLE_BAND - 6) + '" font-size="14" fill="#1a1a1a">♩ = ' + comp.bpm + '</text>');
+    // info do modo
+    out.push('<text x="' + (PAGE_W - MARGIN) + '" y="' + (TITLE_BAND - 6) + '" text-anchor="end" font-size="11" fill="#666" font-style="italic">' + comp.modeName + '</text>');
+
+    for (let line = 0; line < numLines; line++) {
+      const staffTop = TITLE_BAND + line * STAFF_GAP;
+      // linhas da pauta
+      for (let i = 0; i < 5; i++) {
+        const y = staffTop + i * STAFF_LH;
+        out.push('<line x1="' + MARGIN + '" y1="' + y + '" x2="' + (PAGE_W - MARGIN) + '" y2="' + y + '" stroke="#1a1a1a" stroke-width="0.7"/>');
+      }
+      // clave de sol (glifo Unicode 𝄞)
+      out.push('<text x="' + (MARGIN + 4) + '" y="' + (staffTop + STAFF_H + 6) + '" font-size="44" fill="#1a1a1a" font-family="\'Bravura\', \'Cambria Math\', serif">𝄞</text>');
+      // armadura (bemóis)
+      let kx = MARGIN + 38;
+      for (const f of flats) {
+        const fy = staffTop + (8 - FLAT_POS[f]) * STAFF_LH / 2;
+        out.push('<text x="' + kx + '" y="' + (fy + 3) + '" font-size="20" text-anchor="middle" fill="#1a1a1a">♭</text>');
+        kx += 8;
+      }
+      // fórmula de compasso (na primeira linha)
+      if (line === 0) {
+        const tsx = MARGIN + 50 + flats.length * 8;
+        out.push('<text x="' + tsx + '" y="' + (staffTop + STAFF_LH * 1.5 + 3) + '" font-size="17" font-weight="bold" text-anchor="middle" fill="#1a1a1a">4</text>');
+        out.push('<text x="' + tsx + '" y="' + (staffTop + STAFF_LH * 3.5 + 3) + '" font-size="17" font-weight="bold" text-anchor="middle" fill="#1a1a1a">4</text>');
+      }
+      // compassos
+      const startM = line * MEASURES_PER_LINE;
+      const endM = Math.min(startM + MEASURES_PER_LINE, measures.length);
+      const usableW = PAGE_W - 2 * MARGIN - PREFIX_W;
+      const measureW = (endM > startM) ? usableW / (endM - startM) : usableW;
+      let lastChordName = '';
+      for (let m = startM; m < endM; m++) {
+        const mx = MARGIN + PREFIX_W + (m - startM) * measureW;
+        const meas = measures[m];
+        // cifra acima do compasso (só se mudou)
+        if (meas.chord && meas.chord.name && meas.chord.name !== lastChordName) {
+          out.push('<text x="' + (mx + 4) + '" y="' + (staffTop - 8) + '" font-size="13" font-weight="600" fill="#1a1a1a">' + meas.chord.name + '</text>');
+          lastChordName = meas.chord.name;
+        }
+        // notas
+        const ns = meas.notes.length;
+        const noteSpacing = measureW / Math.max(ns, 1);
+        for (let bi = 0; bi < ns; bi++) {
+          const n = meas.notes[bi];
+          const nx = mx + bi * noteSpacing + noteSpacing / 2;
+          const pos = midiToStaffPos(n.pitch);
+          const ny = staffTop + (8 - pos) * STAFF_LH / 2;
+          // linhas suplementares acima
+          if (pos > 8) {
+            for (let lp = 10; lp <= pos; lp += 2) {
+              const ly = staffTop + (8 - lp) * STAFF_LH / 2;
+              out.push('<line x1="' + (nx - 7) + '" y1="' + ly + '" x2="' + (nx + 7) + '" y2="' + ly + '" stroke="#1a1a1a" stroke-width="0.7"/>');
+            }
+          } else if (pos < 0) {
+            // linhas suplementares abaixo
+            const lowest = Math.floor(pos / 2) * 2;
+            for (let lp = -2; lp >= lowest; lp -= 2) {
+              const ly = staffTop + (8 - lp) * STAFF_LH / 2;
+              out.push('<line x1="' + (nx - 7) + '" y1="' + ly + '" x2="' + (nx + 7) + '" y2="' + ly + '" stroke="#1a1a1a" stroke-width="0.7"/>');
+            }
+          }
+          // cabeça da nota (elipse ligeiramente inclinada)
+          out.push('<ellipse cx="' + nx + '" cy="' + ny + '" rx="4.6" ry="3.3" fill="#1a1a1a" transform="rotate(-20 ' + nx + ' ' + ny + ')"/>');
+          // haste
+          const stemUp = pos < 4; // notas abaixo da linha do meio (B4) → haste pra cima
+          const stemX = stemUp ? nx + 4.2 : nx - 4.2;
+          const stemY1 = ny;
+          const stemY2 = ny + (stemUp ? -22 : 22);
+          out.push('<line x1="' + stemX + '" y1="' + stemY1 + '" x2="' + stemX + '" y2="' + stemY2 + '" stroke="#1a1a1a" stroke-width="1.2"/>');
+        }
+        // barra de compasso
+        if (m < endM - 1 || line < numLines - 1) {
+          out.push('<line x1="' + (mx + measureW) + '" y1="' + staffTop + '" x2="' + (mx + measureW) + '" y2="' + (staffTop + STAFF_H) + '" stroke="#1a1a1a" stroke-width="0.7"/>');
+        }
+      }
+      // barra dupla final (na última linha)
+      if (line === numLines - 1 && endM > startM) {
+        const fbx = MARGIN + PREFIX_W + (endM - startM) * measureW;
+        out.push('<line x1="' + (fbx - 4) + '" y1="' + staffTop + '" x2="' + (fbx - 4) + '" y2="' + (staffTop + STAFF_H) + '" stroke="#1a1a1a" stroke-width="0.7"/>');
+        out.push('<line x1="' + (fbx - 1) + '" y1="' + staffTop + '" x2="' + (fbx - 1) + '" y2="' + (staffTop + STAFF_H) + '" stroke="#1a1a1a" stroke-width="2.5"/>');
+      }
+    }
+    out.push('</svg>');
+    return out.join('\n');
+  }
+  function downloadText(name, text, mime) {
+    const blob = new Blob([text], { type: mime });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = 'sua-musica.mid';
+    a.download = name;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  function downloadBlob(name, blob) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = name;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
+  }
+  downloadBtn.addEventListener('click', () => {
+    if (!composition) return;
+    const svg = generateScoreSVG(composition);
+    downloadText('sua-musica.svg', svg, 'image/svg+xml');
+  });
+  const midiBtn = document.getElementById('midi-btn');
+  if (midiBtn) midiBtn.addEventListener('click', () => {
+    if (!composition) return;
+    downloadBlob('sua-musica.mid', new Blob([generateMIDI(composition)], { type: 'audio/midi' }));
   });
 
   // ---- poll do biossensor
@@ -598,9 +762,8 @@
     if (state === STATE.IDLE || state === STATE.RECORDING || state === STATE.COMPOSING) {
       drawHeart();
       if (state === STATE.RECORDING) drawRecordingRing(ts);
-    } else {
-      drawPianoRoll(ts);
     }
+    // em READY/PLAYING a partitura SVG cobre o canvas; não desenha nada
   }
 
   function drawHeart() {
@@ -636,69 +799,6 @@
     ctx.lineWidth = 2.5;
     ctx.stroke();
   }
-  function drawPianoRoll() {
-    if (!composition) return;
-    const padX = clamp(W * 0.05, 24, 60);
-    const x0 = padX;
-    const yTop = H * 0.18;
-    const yBot = H * 0.74;
-    const rollW = W - padX * 2;
-    const rollH = yBot - yTop;
-    // range de pitch
-    let minP = 200, maxP = 0;
-    for (let i = 0; i < composition.melody.length; i++) {
-      const p = composition.melody[i].pitch;
-      if (p < minP) minP = p; if (p > maxP) maxP = p;
-    }
-    for (let i = 0; i < composition.chordBackings.length; i++) {
-      const ts = composition.chordBackings[i].tones;
-      for (let j = 0; j < ts.length; j++) { if (ts[j] < minP) minP = ts[j]; if (ts[j] > maxP) maxP = ts[j]; }
-    }
-    minP -= 2; maxP += 2;
-    const pr = Math.max(1, maxP - minP);
-    const total = composition.totalDuration;
-    function xFor(t) { return x0 + (t / total) * rollW; }
-    function yFor(p) { return yTop + (1 - (p - minP) / pr) * rollH; }
-    // bg
-    ctx.fillStyle = 'rgba(8, 14, 20, 0.45)';
-    ctx.fillRect(x0, yTop, rollW, rollH);
-    // acordes (atrás)
-    for (let i = 0; i < composition.chordBackings.length; i++) {
-      const c = composition.chordBackings[i];
-      const cx = xFor(c.time);
-      const cw = Math.max(2, (c.duration / total) * rollW);
-      for (let j = 0; j < c.tones.length; j++) {
-        const cy = yFor(c.tones[j]);
-        ctx.fillStyle = 'hsla(195, 50%, 45%, 0.35)';
-        ctx.fillRect(cx, cy - 3, cw, 6);
-      }
-    }
-    // melodia (frente)
-    for (let i = 0; i < composition.melody.length; i++) {
-      const n = composition.melody[i];
-      const nx = xFor(n.time);
-      const nw = Math.max(2, (n.duration / total) * rollW - 1);
-      const ny = yFor(n.pitch);
-      const tn = (n.pitch - minP) / pr;
-      const a = 0.55 + n.vel * 0.35;
-      ctx.fillStyle = 'hsla(' + (200 - tn * 80) + ', 78%, 62%, ' + a + ')';
-      ctx.fillRect(nx, ny - 4, nw, 8);
-    }
-    // playhead
-    if (state === STATE.PLAYING) {
-      const elapsedSec = (performance.now() - playbackStart) / 1000;
-      if (elapsedSec <= total) {
-        const px = xFor(elapsedSec);
-        ctx.strokeStyle = 'rgba(255, 210, 130, 0.9)';
-        ctx.lineWidth = 2;
-        ctx.beginPath();
-        ctx.moveTo(px, yTop);
-        ctx.lineTo(px, yBot);
-        ctx.stroke();
-      }
-    }
-  }
-
   setStatus('conecte seu Polar');
   requestAnimationFrame(frame);
 })();
