@@ -74,20 +74,6 @@ html, body {
 .connect:focus-visible { outline: 1px solid rgba(120, 220, 210, 0.4); outline-offset: 6px; }
 .connect.gone { pointer-events: none; opacity: 0; }
 
-.score {
-  position: fixed;
-  inset: clamp(70px, 11vh, 110px) clamp(14px, 3vw, 28px) clamp(78px, 13vh, 130px);
-  overflow: auto;
-  border-radius: 10px;
-  background: #fdfcf8;
-  box-shadow: 0 12px 60px rgba(0, 0, 0, 0.45), 0 0 0 1px rgba(150, 235, 215, 0.10);
-  transition: opacity 0.6s ease;
-  padding: 12px;
-  z-index: 4;
-}
-.score.hidden { opacity: 0; pointer-events: none; }
-.score svg { display: block; margin: 0 auto; max-width: 100%; height: auto; }
-
 .controls {
   position: fixed;
   left: 50%;

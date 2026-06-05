@@ -109,7 +109,6 @@
   const playBtn = document.getElementById('play-btn');
   const downloadBtn = document.getElementById('download-btn');
   const restartBtn = document.getElementById('restart-btn');
-  const scoreEl = document.getElementById('score');
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
 
   // ---- conexão + gravação
@@ -408,11 +407,6 @@
       downloadBtn.style.display = '';
       restartBtn.style.display = '';
       updateReadout();
-      // renderiza e mostra a partitura visual
-      if (scoreEl) {
-        scoreEl.innerHTML = generateScoreSVG(composition);
-        scoreEl.classList.remove('hidden');
-      }
     }, 1500);
   }
   function updateReadout() {
@@ -475,7 +469,6 @@
   restartBtn.addEventListener('click', () => {
     stopPlayback();
     composition = null;
-    if (scoreEl) { scoreEl.classList.add('hidden'); scoreEl.innerHTML = ''; }
     if (window.Bio && window.Bio.data && window.Bio.data.connected) {
       beginRecording();
     } else {
@@ -762,8 +755,67 @@
     if (state === STATE.IDLE || state === STATE.RECORDING || state === STATE.COMPOSING) {
       drawHeart();
       if (state === STATE.RECORDING) drawRecordingRing(ts);
+    } else {
+      drawPianoRoll();
     }
-    // em READY/PLAYING a partitura SVG cobre o canvas; não desenha nada
+  }
+
+  function drawPianoRoll() {
+    if (!composition) return;
+    const padX = clamp(W * 0.05, 24, 60);
+    const x0 = padX;
+    const yTop = H * 0.18;
+    const yBot = H * 0.74;
+    const rollW = W - padX * 2;
+    const rollH = yBot - yTop;
+    let minP = 200, maxP = 0;
+    for (let i = 0; i < composition.melody.length; i++) {
+      const p = composition.melody[i].pitch;
+      if (p < minP) minP = p; if (p > maxP) maxP = p;
+    }
+    for (let i = 0; i < composition.chordBackings.length; i++) {
+      const tns = composition.chordBackings[i].tones;
+      for (let j = 0; j < tns.length; j++) { if (tns[j] < minP) minP = tns[j]; if (tns[j] > maxP) maxP = tns[j]; }
+    }
+    minP -= 2; maxP += 2;
+    const pr = Math.max(1, maxP - minP);
+    const total = composition.totalDuration;
+    function xFor(t) { return x0 + (t / total) * rollW; }
+    function yFor(p) { return yTop + (1 - (p - minP) / pr) * rollH; }
+    ctx.fillStyle = 'rgba(8, 14, 20, 0.45)';
+    ctx.fillRect(x0, yTop, rollW, rollH);
+    for (let i = 0; i < composition.chordBackings.length; i++) {
+      const c = composition.chordBackings[i];
+      const cx = xFor(c.time);
+      const cw = Math.max(2, (c.duration / total) * rollW);
+      for (let j = 0; j < c.tones.length; j++) {
+        const cy = yFor(c.tones[j]);
+        ctx.fillStyle = 'hsla(195, 50%, 45%, 0.35)';
+        ctx.fillRect(cx, cy - 3, cw, 6);
+      }
+    }
+    for (let i = 0; i < composition.melody.length; i++) {
+      const n = composition.melody[i];
+      const nx = xFor(n.time);
+      const nw = Math.max(2, (n.duration / total) * rollW - 1);
+      const ny = yFor(n.pitch);
+      const tn = (n.pitch - minP) / pr;
+      const a = 0.55 + n.vel * 0.35;
+      ctx.fillStyle = 'hsla(' + (200 - tn * 80) + ', 78%, 62%, ' + a + ')';
+      ctx.fillRect(nx, ny - 4, nw, 8);
+    }
+    if (state === STATE.PLAYING) {
+      const elapsedSec = (performance.now() - playbackStart) / 1000;
+      if (elapsedSec <= total) {
+        const px = xFor(elapsedSec);
+        ctx.strokeStyle = 'rgba(255, 210, 130, 0.9)';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px, yTop);
+        ctx.lineTo(px, yBot);
+        ctx.stroke();
+      }
+    }
   }
 
   function drawHeart() {
