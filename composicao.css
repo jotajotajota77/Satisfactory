@@ -127,6 +127,32 @@ html, body {
 .link-coracao { right: clamp(14px, 3vw, 28px); }
 .link-eco:hover, .link-coracao:hover { opacity: 1; color: var(--ink); }
 
+.unlim-toggle, .stop-rec-btn {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  bottom: clamp(20px, 4vh, 48px);
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.26em;
+  text-transform: lowercase;
+  color: var(--ink-soft);
+  background: rgba(12, 20, 28, 0.45);
+  border: 1px solid rgba(150, 235, 215, 0.18);
+  border-radius: 14px;
+  padding: 7px 14px;
+  cursor: pointer;
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  opacity: 0.7;
+  transition: opacity 0.5s ease, color 0.5s ease, border-color 0.5s ease;
+  z-index: 5;
+}
+.unlim-toggle:hover, .stop-rec-btn:hover { opacity: 1; color: var(--ink); border-color: rgba(150, 235, 215, 0.4); }
+.unlim-toggle.on { color: rgba(255, 200, 130, 0.95); border-color: rgba(255, 200, 130, 0.4); }
+.unlim-toggle.hidden, .stop-rec-btn.hidden { opacity: 0; pointer-events: none; }
+.stop-rec-btn { color: rgba(255, 130, 150, 0.95); border-color: rgba(255, 130, 150, 0.35); }
+
 .nojs {
   position: fixed;
   inset: 0;

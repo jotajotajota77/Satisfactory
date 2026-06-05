@@ -109,6 +109,22 @@
   const playBtn = document.getElementById('play-btn');
   const downloadBtn = document.getElementById('download-btn');
   const restartBtn = document.getElementById('restart-btn');
+  const unlimToggle = document.getElementById('unlim-toggle');
+  const stopRecBtn = document.getElementById('stop-rec-btn');
+  let unlimitedMode = false;
+  function setUnlimited(on) {
+    unlimitedMode = !!on;
+    if (unlimToggle) {
+      unlimToggle.classList.toggle('on', unlimitedMode);
+      unlimToggle.textContent = unlimitedMode ? 'sem limite de tempo' : 'tempo padrão · 2:30';
+      unlimToggle.setAttribute('aria-pressed', unlimitedMode ? 'true' : 'false');
+    }
+  }
+  if (unlimToggle) unlimToggle.addEventListener('click', () => setUnlimited(!unlimitedMode));
+  setUnlimited(false);
+  if (stopRecBtn) stopRecBtn.addEventListener('click', () => {
+    if (state === STATE.RECORDING) beginComposing();
+  });
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
 
   // ---- conexão + gravação
@@ -136,7 +152,9 @@
     recording = { rrs: [], times: [], hrs: [], amplitudes: [] };
     composition = null;
     controlsEl.classList.add('hidden');
-    setStatus('registrando seu coração');
+    if (unlimToggle) unlimToggle.classList.add('hidden');
+    if (stopRecBtn) stopRecBtn.classList.remove('hidden');
+    setStatus(unlimitedMode ? 'gravando · sem limite' : 'registrando seu coração');
   }
 
   function handleBeat(rr) {
@@ -353,6 +371,32 @@
       last.pitch = rootMidi + octShift * 12;
     }
 
+    // viradas: nota repetida vira ornamento (bordadura ↑/↓, salto, oitava)
+    let varCount = 0;
+    for (let i = 1; i < melody.length; i++) {
+      if (melody[i].pitch !== melody[i - 1].pitch) continue;
+      const prev = melody[i - 1].pitch;
+      const semiFromRoot = ((prev - rootMidi) % 12 + 12) % 12;
+      const scaleIdx = scale.indexOf(semiFromRoot);
+      if (scaleIdx < 0) continue;
+      // não mexe na ÚLTIMA nota (precisa resolver na tônica)
+      if (i === melody.length - 1) continue;
+      // padrão de 4 variações alternando: ↑1, ↓1, ↑2, oitava ↑
+      let idxDelta = 0, octDelta = 0;
+      const pat = varCount % 4;
+      if (pat === 0) idxDelta = 1;
+      else if (pat === 1) idxDelta = -1;
+      else if (pat === 2) idxDelta = 2;
+      else { idxDelta = 0; octDelta = 12; }
+      varCount++;
+      const len = scale.length;
+      const newIdxRaw = scaleIdx + idxDelta;
+      const wrap = Math.floor(newIdxRaw / len);
+      const adjustedIdx = ((newIdxRaw % len) + len) % len;
+      const baseOct = Math.floor((prev - rootMidi) / 12);
+      melody[i].pitch = rootMidi + (baseOct + wrap) * 12 + scale[adjustedIdx] + octDelta;
+    }
+
     // acordes de fundo (um por frase)
     const CHORD_NAMES = {
       major:  ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'B°'],
@@ -387,6 +431,7 @@
   // ---- transição
   function beginComposing() {
     state = STATE.COMPOSING;
+    if (stopRecBtn) stopRecBtn.classList.add('hidden');
     setStatus('compondo sua música');
     setTimeout(() => {
       const analysis = analyze(recording);
@@ -476,6 +521,7 @@
       setStatus('conecte seu Polar');
       connectBtn.classList.remove('gone');
       controlsEl.classList.add('hidden');
+      if (unlimToggle) unlimToggle.classList.remove('hidden');
     }
   });
 
@@ -727,13 +773,21 @@
     }
     if (state === STATE.RECORDING) {
       const elapsed = performance.now() - recordStart;
-      const remaining = Math.max(0, RECORD_MS - elapsed);
-      const m = Math.floor(remaining / 60000);
-      const s = Math.floor((remaining % 60000) / 1000);
-      readoutEl.textContent = '♥ ' + (B.data.hr || '--') + ' bpm · ' +
-        m + ':' + String(s).padStart(2, '0') + ' restantes · ' +
-        recording.rrs.length + ' batidas';
-      if (elapsed >= RECORD_MS) beginComposing();
+      if (unlimitedMode) {
+        const m = Math.floor(elapsed / 60000);
+        const s = Math.floor((elapsed % 60000) / 1000);
+        readoutEl.textContent = '♥ ' + (B.data.hr || '--') + ' bpm · ' +
+          m + ':' + String(s).padStart(2, '0') + ' · ' +
+          recording.rrs.length + ' batidas';
+      } else {
+        const remaining = Math.max(0, RECORD_MS - elapsed);
+        const m = Math.floor(remaining / 60000);
+        const s = Math.floor((remaining % 60000) / 1000);
+        readoutEl.textContent = '♥ ' + (B.data.hr || '--') + ' bpm · ' +
+          m + ':' + String(s).padStart(2, '0') + ' restantes · ' +
+          recording.rrs.length + ' batidas';
+        if (elapsed >= RECORD_MS) beginComposing();
+      }
     }
   }
 
@@ -754,7 +808,7 @@
     ctx.fillRect(0, 0, W, H);
     if (state === STATE.IDLE || state === STATE.RECORDING || state === STATE.COMPOSING) {
       drawHeart();
-      if (state === STATE.RECORDING) drawRecordingRing(ts);
+      if (state === STATE.RECORDING && !unlimitedMode) drawRecordingRing(ts);
     } else {
       drawPianoRoll();
     }
