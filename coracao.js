@@ -38,8 +38,43 @@
   let calibrationExtensions = 0;
   let rrMin = Infinity, rrMax = -Infinity;
   let beatPulse = 0;
-  let lastNoteKey = -1, lastNoteAt = -9e9;
-  let longNotes = false; // toggle: nota normal × nota longa
+  let lastNoteKeys = [];   // teclas iluminadas no último ataque (1 ou 4)
+  let lastNoteAt = -9e9;
+  let lastChordName = '';  // nome do acorde tocado (modo acordes)
+  let longNotes = false;   // toggle: nota normal × nota longa
+  let chordMode = false;   // toggle: notas soltas × acordes diatônicos
+
+  // C maior: I=C, ii=Dm, iii=Em, IV=F, V=G, vi=Am, vii°=B°
+  const SCALE_C_MAJOR = [0, 2, 4, 5, 7, 9, 11]; // semitons a partir de C
+  const NOTE_LETTERS_C = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+
+  function snapToScale(key) {
+    // encontra a tecla mais próxima que pertence a C maior
+    const semiFromC = ((key + 9) % 12 + 12) % 12;
+    let best = SCALE_C_MAJOR[0], minDist = 99;
+    for (const s of SCALE_C_MAJOR) {
+      const d = Math.abs(s - semiFromC);
+      if (d < minDist) { minDist = d; best = s; }
+    }
+    return key + (best - semiFromC);
+  }
+
+  function chordFromRoot(rootKey) {
+    const semiFromC = ((rootKey + 9) % 12 + 12) % 12;
+    let degree = SCALE_C_MAJOR.indexOf(semiFromC);
+    if (degree < 0) degree = 0;
+    const thirdIdx = degree + 2;
+    const fifthIdx = degree + 4;
+    const thirdSemi = SCALE_C_MAJOR[thirdIdx % 7] + (thirdIdx >= 7 ? 12 : 0) - SCALE_C_MAJOR[degree];
+    const fifthSemi = SCALE_C_MAJOR[fifthIdx % 7] + (fifthIdx >= 7 ? 12 : 0) - SCALE_C_MAJOR[degree];
+    // baixo + tríade fechada
+    const all = [rootKey - 12, rootKey, rootKey + thirdSemi, rootKey + fifthSemi];
+    const keys = all.filter(k => k >= 0 && k <= KEY_COUNT - 1);
+    const isDim = degree === 6;
+    const isMinor = degree === 1 || degree === 2 || degree === 5;
+    const quality = isDim ? '°' : (isMinor ? 'm' : '');
+    return { keys: keys, name: NOTE_LETTERS_C[degree] + quality };
+  }
   // ---- filtragem de RR (ignora outliers/extrassístoles)
   const RR_HARD_MIN = 300;  // < 300 ms (> 200 bpm): ruído
   const RR_HARD_MAX = 2000; // > 2000 ms (< 30 bpm): batida perdida / artefato
@@ -134,6 +169,7 @@
   const readoutEl = document.getElementById('readout');
   const connectBtn = document.getElementById('connect');
   const durToggle = document.getElementById('dur-toggle');
+  const modeToggle = document.getElementById('mode-toggle');
   function setStatus(t) { if (statusEl) statusEl.textContent = t; }
   function setLongNotes(on) {
     longNotes = !!on;
@@ -143,8 +179,18 @@
       durToggle.setAttribute('aria-pressed', longNotes ? 'true' : 'false');
     }
   }
+  function setChordMode(on) {
+    chordMode = !!on;
+    if (modeToggle) {
+      modeToggle.classList.toggle('on', chordMode);
+      modeToggle.textContent = chordMode ? 'acordes' : 'notas';
+      modeToggle.setAttribute('aria-pressed', chordMode ? 'true' : 'false');
+    }
+  }
   if (durToggle) durToggle.addEventListener('click', () => setLongNotes(!longNotes));
+  if (modeToggle) modeToggle.addEventListener('click', () => setChordMode(!chordMode));
   setLongNotes(false);
+  setChordMode(false);
 
   // ---- conexão
   connectBtn.addEventListener('click', async () => {
@@ -199,14 +245,30 @@
       // o RR é clampado nos limites P5/P95 para mapear na escala
       const rrC = clamp(rr, rrMin, rrMax);
       const key = rrToKey(rrC);
-      const freq = keyToFreq(key);
-      const tPos = key / (KEY_COUNT - 1);
-      const vel = 0.32 + 0.45 * tPos;
-      const dur = longNotes
-        ? lerp(11, 5, tPos)
-        : lerp(4.6, 1.7, tPos);
-      piano(freq, vel, dur);
-      lastNoteKey = key;
+      if (chordMode) {
+        // quantiza pra C maior e toca a tríade diatônica + baixo (1 oitava abaixo)
+        const root = snapToScale(key);
+        const ch = chordFromRoot(root);
+        const tPos = clamp(root / (KEY_COUNT - 1), 0, 1);
+        const vel = 0.32 + 0.45 * tPos;
+        const dur = longNotes ? lerp(11, 5, tPos) : lerp(4.6, 1.7, tPos);
+        // stagger mínimo (≈6 ms) imita o ataque de uma mão real
+        ch.keys.forEach((k, i) => {
+          const f = keyToFreq(k);
+          const v = vel * (i === 0 ? 0.55 : 0.45); // baixo um pouco mais forte
+          setTimeout(() => piano(f, v, dur), i * 6);
+        });
+        lastNoteKeys = ch.keys.slice();
+        lastChordName = ch.name;
+      } else {
+        const freq = keyToFreq(key);
+        const tPos = key / (KEY_COUNT - 1);
+        const vel = 0.32 + 0.45 * tPos;
+        const dur = longNotes ? lerp(11, 5, tPos) : lerp(4.6, 1.7, tPos);
+        piano(freq, vel, dur);
+        lastNoteKeys = [key];
+        lastChordName = '';
+      }
       lastNoteAt = performance.now();
     }
   }
@@ -229,7 +291,9 @@
         const max = isFinite(rrMax) ? (rrMax | 0) : '--';
         readoutEl.textContent = `♥ ${B.data.hr || '--'} bpm · coletando ${Math.ceil(left / 1000)}s · ${min}–${max} ms`;
       } else if (state === STATE.PLAYING) {
-        const note = lastNoteKey >= 0 ? ' · ' + keyName(lastNoteKey) : '';
+        let note = '';
+        if (chordMode && lastChordName) note = ' · ' + lastChordName;
+        else if (lastNoteKeys.length > 0) note = ' · ' + keyName(lastNoteKeys[0]);
         readoutEl.textContent = `♥ ${B.data.hr || '--'} bpm${note} · ${rrMin | 0}–${rrMax | 0} ms`;
       } else {
         readoutEl.textContent = '';
@@ -309,13 +373,14 @@
     const yTop = yBottom - whiteHeight;
     const now = performance.now();
     const litAge = (now - lastNoteAt) / 1100;
-    const litT = lastNoteKey >= 0 ? Math.max(0, 1 - litAge) : 0;
+    const litT = lastNoteKeys.length > 0 ? Math.max(0, 1 - litAge) : 0;
+    const litSet = lastNoteKeys; // 1 ou 4 teclas
     // teclas brancas
     let wi = 0;
     for (let k = 0; k < KEY_COUNT; k++) {
       if (!isBlackKey(k)) {
         const x = padX + wi * whiteWidth;
-        const lit = (k === lastNoteKey) ? litT : 0;
+        const lit = (litSet.indexOf(k) >= 0) ? litT : 0;
         const tn = k / (KEY_COUNT - 1);
         const hue = 198 - tn * 90; // grave (azul) → aguda (verde-amarelo)
         ctx.fillStyle = lit > 0
@@ -330,7 +395,7 @@
     for (let k = 0; k < KEY_COUNT; k++) {
       if (isBlackKey(k)) {
         const x = padX + wi * whiteWidth - blackWidth / 2;
-        const lit = (k === lastNoteKey) ? litT : 0;
+        const lit = (litSet.indexOf(k) >= 0) ? litT : 0;
         const tn = k / (KEY_COUNT - 1);
         const hue = 198 - tn * 90;
         ctx.fillStyle = lit > 0

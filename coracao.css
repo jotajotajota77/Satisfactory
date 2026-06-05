@@ -90,11 +90,18 @@ html, body {
 }
 .link-eco:hover { color: var(--ink); }
 
-/* Toggle: nota normal × nota longa */
-.dur-toggle {
+/* Toggles (modo + duração) */
+.toggles {
   position: fixed;
   top: clamp(14px, 3vh, 28px);
   right: clamp(14px, 3vw, 28px);
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: flex-end;
+  z-index: 6;
+}
+.dur-toggle {
   font: inherit;
   font-size: 11px;
   letter-spacing: 0.26em;
@@ -109,7 +116,6 @@ html, body {
   -webkit-backdrop-filter: blur(8px);
   opacity: 0.55;
   transition: opacity 0.5s ease, color 0.5s ease, border-color 0.5s ease;
-  z-index: 6;
 }
 .dur-toggle:hover { opacity: 0.95; color: var(--ink); }
 .dur-toggle.on {
