@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#04080c" />
+  <meta name="description" content="Composição — seu coração registra 2:30 e gera uma música coerente, com partitura para baixar." />
+  <title>Sua música</title>
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+  <link rel="stylesheet" href="composicao.css" />
+</head>
+<body>
+  <canvas id="stage" aria-label="Sua música"></canvas>
+
+  <button id="connect" class="connect" type="button" aria-label="conectar seu Polar"></button>
+
+  <div id="status" class="status">conecte seu Polar</div>
+  <div id="readout" class="readout"></div>
+
+  <div id="controls" class="controls hidden">
+    <button id="play-btn" class="ctrl-btn play" type="button" aria-label="tocar/parar">&#9654;</button>
+    <button id="download-btn" class="ctrl-btn" type="button">baixar partitura (.mid)</button>
+    <button id="restart-btn" class="ctrl-btn" type="button">nova música</button>
+  </div>
+
+  <a class="link-eco" href="./">&larr; ecossistema</a>
+  <a class="link-coracao" href="coracao.html">coração toca</a>
+
+  <noscript>
+    <div class="nojs">precisa de JavaScript</div>
+  </noscript>
+
+  <script src="polar.js"></script>
+  <script src="composicao.js"></script>
+</body>
+</html>
