@@ -1087,6 +1087,10 @@
     s.hue = pal.h1 + Math.sin(W.now * 0.0007) * 50 + Math.sin(W.now * 0.00017) * 18 + W.hueDrift;
     s.beatDt = 1000 / SCOPE_RATE;
 
+    // detecta cedo se o ECG nativo do Polar está streamando
+    const bio = window.Bio && window.Bio.data;
+    const ecgActive = !!(W.bio.active && bio && bio.ecgOn && bio.ecgBuf);
+
     // distorção no tempo: desacelera até parar, explode, depois volta ao normal
     if (s.explodePhase === 1) {
       s.timeWarp = Math.max(0, s.timeWarp - dt / 1800);
@@ -1099,20 +1103,23 @@
       s.timeWarp = Math.min(1, s.timeWarp + dt / 600);
     }
 
+    // tremor *somente* da desaceleração da explosão (usado quando ECG está ativo)
+    const explodeTremor = s.explodePhase === 1 ? (1 - s.timeWarp) * 0.5 : 0;
+
     const baseAmp = (W.bio.active ? W.h * 0.11 : W.h * 0.07);
-    const ampTarget = baseAmp * (0.55 + 0.6 * (0.5 + 0.5 * n2(W.now * 0.00004, 50))) * (1 + s.glitch * 1.4);
+    // no modo ECG, a amplitude só treme pela desaceleração; nunca pelos glitches aleatórios
+    const ampGlitch = ecgActive ? explodeTremor : s.glitch;
+    const ampTarget = baseAmp * (0.55 + 0.6 * (0.5 + 0.5 * n2(W.now * 0.00004, 50))) * (1 + ampGlitch * 1.4);
     s.amp = lerp(s.amp, ampTarget, 1 - Math.pow(0.2, dt / 1000));
     const normalAlpha = W.bio.active ? 0.95 : 0.75;
     s.alphaTarget = lerp(s.alphaTarget, normalAlpha, 1 - Math.pow(0.85, dt / 1000));
     s.alpha = lerp(s.alpha, s.alphaTarget, 1 - Math.pow(0.25, dt / 1000));
     s.glitch *= Math.pow(0.06, dt / 1000);
     s.glitchCD -= dt; s.explodeCD -= dt;
-    if (s.glitchCD <= 0 && Math.random() < dt / 9000) { scopeGlitch(rand(0.4, 1)); s.glitchCD = rand(2500, 7000); }
+    // glitches ambientes aleatórios só quando NÃO há ECG real (sinal precisa ficar limpo)
+    if (!ecgActive && s.glitchCD <= 0 && Math.random() < dt / 9000) { scopeGlitch(rand(0.4, 1)); s.glitchCD = rand(2500, 7000); }
     if (s.explodePhase === 0 && s.explodeCD <= 0 && Math.random() < dt / 22000) { scopeExplode(); s.explodeCD = rand(14000, 30000); }
 
-    // ECG real do Polar (quando disponível): puxa as amostras já vindas do device
-    const bio = window.Bio && window.Bio.data;
-    const ecgActive = !!(W.bio.active && bio && bio.ecgOn && bio.ecgBuf);
     if (ecgActive) {
       const writeHead = bio.ecgHead;
       const BUF_LEN = bio.ecgBuf.length;
@@ -1146,7 +1153,8 @@
       for (let i = 0; i < toPush; i++) {
         s.head = (s.head + 1) % s.n;
         let v = bio.ecgBuf[s.ecgReadIdx];
-        if (s.glitch > 0.01) v += (Math.random() * 2 - 1) * s.glitch * 0.7;
+        // o ECG só é "perturbado" pela desaceleração da explosão; nunca por glitch aleatório
+        if (explodeTremor > 0.01) v += (Math.random() * 2 - 1) * explodeTremor * 0.7;
         s.hist[s.head] = clamp(v, -3, 3);
         s.ecgReadIdx = (s.ecgReadIdx + 1) % BUF_LEN;
       }

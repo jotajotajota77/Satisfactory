@@ -38,42 +38,63 @@
   let calibrationExtensions = 0;
   let rrMin = Infinity, rrMax = -Infinity;
   let beatPulse = 0;
-  let lastNoteKeys = [];   // teclas iluminadas no último ataque (1 ou 4)
+  let lastNoteKeys = [];   // teclas iluminadas no último ataque (1 ou várias)
   let lastNoteAt = -9e9;
-  let lastChordName = '';  // nome do acorde tocado (modo acordes)
+  let lastChordName = '';  // nome do acorde tocado
   let longNotes = false;   // toggle: nota normal × nota longa
-  let chordMode = false;   // toggle: notas soltas × acordes diatônicos
 
-  // C maior: I=C, ii=Dm, iii=Em, IV=F, V=G, vi=Am, vii°=B°
-  const SCALE_C_MAJOR = [0, 2, 4, 5, 7, 9, 11]; // semitons a partir de C
-  const NOTE_LETTERS_C = ['C', 'D', 'E', 'F', 'G', 'A', 'B'];
+  // ---- presets de "vibe" (escala + tipo de acorde + nomes diatônicos)
+  // rootSemi = semitons da fundamental do modo a partir de C (C=0, D=2, E=4, F=5, G=7, A=9, B=11)
+  const PRESETS = [
+    { name: 'notas', chromatic: true },
+    { name: 'sereno', scale: [0, 2, 4, 5, 7, 9, 11], rootSemi: 0, chord: 'triad',
+      chordNames: ['C', 'Dm', 'Em', 'F', 'G', 'Am', 'B°'] },
+    { name: 'melancólico', scale: [0, 2, 3, 5, 7, 8, 10], rootSemi: 9, chord: 'triad',
+      chordNames: ['Am', 'B°', 'C', 'Dm', 'Em', 'F', 'G'] },
+    { name: 'misterioso', scale: [0, 2, 3, 5, 7, 9, 10], rootSemi: 2, chord: '7',
+      chordNames: ['Dm7', 'Em7', 'Fmaj7', 'G7', 'Am7', 'Bm7♭5', 'Cmaj7'] },
+    { name: 'sonhador', scale: [0, 2, 4, 6, 7, 9, 11], rootSemi: 5, chord: '7',
+      chordNames: ['Fmaj7', 'G7', 'Am7', 'Bm7♭5', 'Cmaj7', 'Dm7', 'Em7'] },
+    { name: 'sombrio', scale: [0, 1, 3, 5, 7, 8, 10], rootSemi: 4, chord: 'triad',
+      chordNames: ['Em', 'F', 'G', 'Am', 'B°', 'C', 'Dm'] },
+    { name: 'oriental', scale: [0, 3, 5, 7, 10], rootSemi: 9, chord: 'power',
+      chordNames: ['A5', 'C5', 'D5', 'E5', 'G5'] },
+    { name: 'onírico', scale: [0, 2, 4, 6, 8, 10], rootSemi: 0, chord: 'triad',
+      chordNames: ['C+', 'D+', 'E+', 'F#+', 'G#+', 'A#+'] },
+  ];
+  let modeIdx = 0;
 
-  function snapToScale(key) {
-    // encontra a tecla mais próxima que pertence a C maior
+  function snapToScalePreset(key, preset) {
+    // encontra a tecla mais próxima dentro da escala do preset
     const semiFromC = ((key + 9) % 12 + 12) % 12;
-    let best = SCALE_C_MAJOR[0], minDist = 99;
-    for (const s of SCALE_C_MAJOR) {
-      const d = Math.abs(s - semiFromC);
+    const rel = (semiFromC - preset.rootSemi + 12) % 12;
+    let best = preset.scale[0], minDist = 99;
+    for (const s of preset.scale) {
+      const d = Math.min(Math.abs(s - rel), 12 - Math.abs(s - rel));
       if (d < minDist) { minDist = d; best = s; }
     }
-    return key + (best - semiFromC);
+    let delta = best - rel;
+    if (delta > 6) delta -= 12;
+    if (delta < -6) delta += 12;
+    return key + delta;
   }
-
-  function chordFromRoot(rootKey) {
-    const semiFromC = ((rootKey + 9) % 12 + 12) % 12;
-    let degree = SCALE_C_MAJOR.indexOf(semiFromC);
-    if (degree < 0) degree = 0;
-    const thirdIdx = degree + 2;
-    const fifthIdx = degree + 4;
-    const thirdSemi = SCALE_C_MAJOR[thirdIdx % 7] + (thirdIdx >= 7 ? 12 : 0) - SCALE_C_MAJOR[degree];
-    const fifthSemi = SCALE_C_MAJOR[fifthIdx % 7] + (fifthIdx >= 7 ? 12 : 0) - SCALE_C_MAJOR[degree];
-    // baixo + tríade fechada
-    const all = [rootKey - 12, rootKey, rootKey + thirdSemi, rootKey + fifthSemi];
-    const keys = all.filter(k => k >= 0 && k <= KEY_COUNT - 1);
-    const isDim = degree === 6;
-    const isMinor = degree === 1 || degree === 2 || degree === 5;
-    const quality = isDim ? '°' : (isMinor ? 'm' : '');
-    return { keys: keys, name: NOTE_LETTERS_C[degree] + quality };
+  function degreeOfKey(key, preset) {
+    const semiFromC = ((key + 9) % 12 + 12) % 12;
+    const rel = (semiFromC - preset.rootSemi + 12) % 12;
+    const i = preset.scale.indexOf(rel);
+    return i >= 0 ? i : 0;
+  }
+  function chordIntervalsForPreset(preset, degree) {
+    if (preset.chord === 'power') return [0, 7]; // power chord (root + 5ª perfeita)
+    const scale = preset.scale;
+    const len = scale.length;
+    const indices = preset.chord === '7' ? [0, 2, 4, 6] : [0, 2, 4];
+    const root = scale[degree];
+    return indices.map(i => {
+      const idx = degree + i;
+      const oct = Math.floor(idx / len);
+      return scale[idx % len] + oct * 12 - root;
+    });
   }
   // ---- filtragem de RR (ignora outliers/extrassístoles)
   const RR_HARD_MIN = 300;  // < 300 ms (> 200 bpm): ruído
@@ -179,18 +200,19 @@
       durToggle.setAttribute('aria-pressed', longNotes ? 'true' : 'false');
     }
   }
-  function setChordMode(on) {
-    chordMode = !!on;
+  function setMode(idx) {
+    modeIdx = ((idx % PRESETS.length) + PRESETS.length) % PRESETS.length;
+    const preset = PRESETS[modeIdx];
     if (modeToggle) {
-      modeToggle.classList.toggle('on', chordMode);
-      modeToggle.textContent = chordMode ? 'acordes' : 'notas';
-      modeToggle.setAttribute('aria-pressed', chordMode ? 'true' : 'false');
+      modeToggle.textContent = preset.name;
+      modeToggle.classList.toggle('on', !preset.chromatic);
+      modeToggle.setAttribute('aria-pressed', preset.chromatic ? 'false' : 'true');
     }
   }
   if (durToggle) durToggle.addEventListener('click', () => setLongNotes(!longNotes));
-  if (modeToggle) modeToggle.addEventListener('click', () => setChordMode(!chordMode));
+  if (modeToggle) modeToggle.addEventListener('click', () => setMode(modeIdx + 1));
   setLongNotes(false);
-  setChordMode(false);
+  setMode(0);
 
   // ---- conexão
   connectBtn.addEventListener('click', async () => {
@@ -242,25 +264,11 @@
     // limites = percentil 5 / 95 do buffer (outliers/extrassístoles ignorados)
     updateRangeFromBuf();
     if (state === STATE.PLAYING) {
-      // o RR é clampado nos limites P5/P95 para mapear na escala
       const rrC = clamp(rr, rrMin, rrMax);
       const key = rrToKey(rrC);
-      if (chordMode) {
-        // quantiza pra C maior e toca a tríade diatônica + baixo (1 oitava abaixo)
-        const root = snapToScale(key);
-        const ch = chordFromRoot(root);
-        const tPos = clamp(root / (KEY_COUNT - 1), 0, 1);
-        const vel = 0.32 + 0.45 * tPos;
-        const dur = longNotes ? lerp(11, 5, tPos) : lerp(4.6, 1.7, tPos);
-        // stagger mínimo (≈6 ms) imita o ataque de uma mão real
-        ch.keys.forEach((k, i) => {
-          const f = keyToFreq(k);
-          const v = vel * (i === 0 ? 0.55 : 0.45); // baixo um pouco mais forte
-          setTimeout(() => piano(f, v, dur), i * 6);
-        });
-        lastNoteKeys = ch.keys.slice();
-        lastChordName = ch.name;
-      } else {
+      const preset = PRESETS[modeIdx];
+      if (preset.chromatic) {
+        // notas soltas cromáticas (sensação aleatória, sem escala)
         const freq = keyToFreq(key);
         const tPos = key / (KEY_COUNT - 1);
         const vel = 0.32 + 0.45 * tPos;
@@ -268,6 +276,24 @@
         piano(freq, vel, dur);
         lastNoteKeys = [key];
         lastChordName = '';
+      } else {
+        // quantiza pra escala do preset e toca o acorde diatônico daquele grau
+        const root = snapToScalePreset(key, preset);
+        const degree = degreeOfKey(root, preset);
+        const intervals = chordIntervalsForPreset(preset, degree);
+        const tones = intervals.map(i => root + i).filter(k => k >= 0 && k <= KEY_COUNT - 1);
+        const bass = root - 12;
+        const keys = (bass >= 0 ? [bass] : []).concat(tones);
+        const tPos = clamp(root / (KEY_COUNT - 1), 0, 1);
+        const vel = 0.32 + 0.45 * tPos;
+        const dur = longNotes ? lerp(11, 5, tPos) : lerp(4.6, 1.7, tPos);
+        keys.forEach((k, i) => {
+          const f = keyToFreq(k);
+          const v = vel * (i === 0 ? 0.55 : 0.45); // baixo um pouco mais forte
+          setTimeout(() => piano(f, v, dur), i * 6);
+        });
+        lastNoteKeys = keys.slice();
+        lastChordName = (preset.chordNames && preset.chordNames[degree]) || '';
       }
       lastNoteAt = performance.now();
     }
@@ -292,7 +318,7 @@
         readoutEl.textContent = `♥ ${B.data.hr || '--'} bpm · coletando ${Math.ceil(left / 1000)}s · ${min}–${max} ms`;
       } else if (state === STATE.PLAYING) {
         let note = '';
-        if (chordMode && lastChordName) note = ' · ' + lastChordName;
+        if (lastChordName) note = ' · ' + lastChordName;
         else if (lastNoteKeys.length > 0) note = ' · ' + keyName(lastNoteKeys[0]);
         readoutEl.textContent = `♥ ${B.data.hr || '--'} bpm${note} · ${rrMin | 0}–${rrMax | 0} ms`;
       } else {
