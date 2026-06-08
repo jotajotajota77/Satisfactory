@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+  <meta name="theme-color" content="#04080c" />
+  <meta name="description" content="Joguinho de evolução — desenhe uma criatura e veja a seleção natural escolher o melhor andador." />
+  <title>Joguinho de evolução</title>
+  <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png" />
+  <link rel="stylesheet" href="joguinho.css" />
+</head>
+<body>
+  <canvas id="stage" aria-label="Joguinho de evolução"></canvas>
+
+  <div id="info" class="info">desenhe sua criatura · clique pra criar um ponto · arraste de um ponto pra outro pra ligar</div>
+
+  <div id="draw-controls" class="controls">
+    <button id="mode-bone" class="ctrl-btn on" type="button">osso</button>
+    <button id="mode-muscle" class="ctrl-btn" type="button">músculo</button>
+    <button id="undo-btn" class="ctrl-btn" type="button">desfazer</button>
+    <button id="clear-btn" class="ctrl-btn" type="button">limpar</button>
+    <button id="start-btn" class="ctrl-btn primary" type="button">começar</button>
+  </div>
+
+  <div id="evol-controls" class="controls hidden">
+    <button id="boom-btn" class="ctrl-btn primary" type="button">BOOM</button>
+    <button id="auto-toggle" class="ctrl-btn" type="button">auto</button>
+    <input id="auto-secs" class="ctrl-input" type="number" min="2" max="120" step="1" value="12" />
+    <span class="lbl">s</span>
+    <button id="back-btn" class="ctrl-btn" type="button">voltar ao desenho</button>
+  </div>
+
+  <a class="link-eco" href="./">&larr; ecossistema</a>
+
+  <noscript><div class="nojs">precisa de JavaScript</div></noscript>
+
+  <script src="joguinho.js"></script>
+</body>
+</html>
