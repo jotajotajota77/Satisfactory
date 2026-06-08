@@ -42,17 +42,19 @@
   let state = STATE.DRAWING;
 
   // template (desenho do usuário)
-  let tVertices = []; // [{x, y}]
-  let tBones = [];    // [{a, b}] (índices)
-  let tMuscles = [];  // [{a, b}]
+  let tVertices = []; // [{x, y}] articulações
+  let tBones = [];    // [{a, b}] (índices de articulação)
+  let tMuscles = [];  // [{ba, bb}] (índices de ossos)
   let history = [];   // pra desfazer (pilha de ações)
-  let placementMode = 'bone'; // 'bone' | 'muscle'
+  let placementMode = 'joint'; // 'joint' | 'bone' | 'muscle'
 
   // interação com mouse/toque
   let dragStart = null;     // {x, y} ponto inicial do drag
-  let dragStartIdx = -1;    // índice do vértice se for de um vértice
+  let dragStartV = -1;      // índice de articulação se drag de joint
+  let dragStartB = -1;      // índice de osso se drag de bone (modo músculo)
   let dragEnd = null;       // {x, y} atual durante drag
-  let hoverIdx = -1;
+  let hoverV = -1;
+  let hoverB = -1;
 
   // organismos
   let organisms = [];
@@ -64,13 +66,17 @@
   let autoBoomNext = 0;
   let autoBoomLastShown = 0;
 
-  // câmera (rola na evolução)
+  // câmera (rola na evolução, com zoom out)
   let camX = 0;
+  let camScale = 0.55; // zoom out: vê quase 2x mais área que sem zoom
+  function projX(wx) { return W / 2 + (wx - camX) * camScale; }
+  function projY(wy) { const fy = H - FLOOR_PAD; return fy + (wy - fy) * camScale; }
 
   // ---- DOM
   const infoEl = document.getElementById('info');
   const drawCtrl = document.getElementById('draw-controls');
   const evolCtrl = document.getElementById('evol-controls');
+  const modeJoint = document.getElementById('mode-joint');
   const modeBone = document.getElementById('mode-bone');
   const modeMuscle = document.getElementById('mode-muscle');
   const undoBtn = document.getElementById('undo-btn');
@@ -83,9 +89,11 @@
 
   function setMode(m) {
     placementMode = m;
+    modeJoint.classList.toggle('on', m === 'joint');
     modeBone.classList.toggle('on', m === 'bone');
     modeMuscle.classList.toggle('on', m === 'muscle');
   }
+  modeJoint.addEventListener('click', () => setMode('joint'));
   modeBone.addEventListener('click', () => setMode('bone'));
   modeMuscle.addEventListener('click', () => setMode('muscle'));
   undoBtn.addEventListener('click', undo);
@@ -111,20 +119,49 @@
     }
     return -1;
   }
+  function ptSegDist(px, py, x1, y1, x2, y2) {
+    const dx = x2 - x1, dy = y2 - y1;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1) { const ex = px - x1, ey = py - y1; return Math.sqrt(ex * ex + ey * ey); }
+    let t = ((px - x1) * dx + (py - y1) * dy) / len2;
+    t = clamp(t, 0, 1);
+    const cx = x1 + dx * t, cy = y1 + dy * t;
+    const ex = px - cx, ey = py - cy;
+    return Math.sqrt(ex * ex + ey * ey);
+  }
+  function boneNear(x, y) {
+    let best = -1, bestD = 12;
+    for (let i = 0; i < tBones.length; i++) {
+      const v1 = tVertices[tBones[i].a], v2 = tVertices[tBones[i].b];
+      const d = ptSegDist(x, y, v1.x, v1.y, v2.x, v2.y);
+      if (d < bestD) { bestD = d; best = i; }
+    }
+    return best;
+  }
+  function boneMid(boneIdx) {
+    const b = tBones[boneIdx];
+    const v1 = tVertices[b.a], v2 = tVertices[b.b];
+    return { x: (v1.x + v2.x) * 0.5, y: (v1.y + v2.y) * 0.5 };
+  }
   function addVertex(x, y) {
     tVertices.push({ x, y });
     history.push({ kind: 'v' });
     return tVertices.length - 1;
   }
   function addBone(a, b) {
-    if (a === b) return;
+    if (a === b || a < 0 || b < 0) return false;
+    // evita duplicata
+    for (const ex of tBones) if ((ex.a === a && ex.b === b) || (ex.a === b && ex.b === a)) return false;
     tBones.push({ a, b });
     history.push({ kind: 'b' });
+    return true;
   }
-  function addMuscle(a, b) {
-    if (a === b) return;
-    tMuscles.push({ a, b });
+  function addMuscle(ba, bb) {
+    if (ba === bb || ba < 0 || bb < 0) return false;
+    for (const ex of tMuscles) if ((ex.ba === ba && ex.bb === bb) || (ex.ba === bb && ex.bb === ba)) return false;
+    tMuscles.push({ ba, bb });
     history.push({ kind: 'm' });
+    return true;
   }
   function undo() {
     if (state !== STATE.DRAWING || !history.length) return;
@@ -141,25 +178,17 @@
   // ---- início da simulação
   function start() {
     if (state !== STATE.DRAWING) return;
-    if (tVertices.length < 2 || (tBones.length + tMuscles.length) < 1) {
-      flash('precisa de ao menos 2 pontos ligados');
-      return;
-    }
-    if (tMuscles.length === 0) {
-      flash('sem músculos não tem movimento — adicione pelo menos 1');
-      return;
-    }
+    if (tVertices.length < 2) { flash('coloque ao menos 2 articulações'); return; }
+    if (tBones.length < 2) { flash('coloque ao menos 2 ossos'); return; }
+    if (tMuscles.length === 0) { flash('sem músculos não há movimento — adicione pelo menos 1'); return; }
     state = STATE.EVOLVING;
     drawCtrl.classList.add('hidden');
     evolCtrl.classList.remove('hidden');
     generation = 1;
     bestEverDistance = 0;
-    camX = 0;
-    // primeira geração com genomas aleatórios
+    camX = 180; // matches startX no makeOrganism
     organisms = [];
-    for (let i = 0; i < POP_SIZE; i++) {
-      organisms.push(makeOrganism(randomGenome(), i));
-    }
+    for (let i = 0; i < POP_SIZE; i++) organisms.push(makeOrganism(randomGenome(), i));
     if (autoBoom) autoBoomNext = performance.now() + (+autoSecs.value || 12) * 1000;
   }
 
@@ -212,10 +241,17 @@
       a: b.a, b: b.b,
       length: dist(tVertices[b.a], tVertices[b.b]),
     }));
+    // músculos ligam dois ossos; o "comprimento" é a distância entre os
+    // midpoints dos dois ossos no descanso
+    function midOf(boneIdx) {
+      const bb = tBones[boneIdx];
+      return { x: (tVertices[bb.a].x + tVertices[bb.b].x) * 0.5, y: (tVertices[bb.a].y + tVertices[bb.b].y) * 0.5 };
+    }
     const muscles = tMuscles.map((m, i) => {
-      const base = dist(tVertices[m.a], tVertices[m.b]);
+      const m1 = midOf(m.ba), m2 = midOf(m.bb);
+      const base = Math.max(2, dist(m1, m2));
       return {
-        a: m.a, b: m.b, base,
+        ba: m.ba, bb: m.bb, base,
         freq: genome[i].freq,
         phase: genome[i].phase,
         amp: genome[i].amp,
@@ -247,14 +283,13 @@
     for (let it = 0; it < ITERATIONS; it++) {
       for (const b of org.bones) satisfyDistance(org.vertices[b.a], org.vertices[b.b], b.length, 0.5);
       for (const m of org.muscles) {
-        const target = m.base * (1 + m.amp * Math.sin(org.time * m.freq + m.phase));
-        satisfyDistance(org.vertices[m.a], org.vertices[m.b], Math.max(2, target), 0.5);
+        const target = Math.max(2, m.base * (1 + m.amp * Math.sin(org.time * m.freq + m.phase)));
+        satisfyMuscle(org, m, target, 0.5);
       }
       // chão + atrito
       for (const v of org.vertices) {
         if (v.y > floorY) {
           v.y = floorY;
-          // atrito horizontal: empurra px em direção a x (reduz vx)
           v.px += (v.x - v.px) * FRICTION_GROUND;
         }
       }
@@ -268,6 +303,23 @@
     const factor = (d - target) / d * k;
     v1.x += dx * factor; v1.y += dy * factor;
     v2.x -= dx * factor; v2.y -= dy * factor;
+  }
+  function satisfyMuscle(org, m, target, k) {
+    const b1 = org.bones[m.ba], b2 = org.bones[m.bb];
+    const v1a = org.vertices[b1.a], v1b = org.vertices[b1.b];
+    const v2a = org.vertices[b2.a], v2b = org.vertices[b2.b];
+    const m1x = (v1a.x + v1b.x) * 0.5, m1y = (v1a.y + v1b.y) * 0.5;
+    const m2x = (v2a.x + v2b.x) * 0.5, m2y = (v2a.y + v2b.y) * 0.5;
+    const dx = m2x - m1x, dy = m2y - m1y;
+    const d = Math.sqrt(dx * dx + dy * dy);
+    if (d < 0.0001) return;
+    const factor = (d - target) / d * k;
+    const fx = dx * factor, fy = dy * factor;
+    // move o midpoint de b1 em direção a b2: aplica o mesmo delta nos dois vértices de b1
+    v1a.x += fx; v1a.y += fy;
+    v1b.x += fx; v1b.y += fy;
+    v2a.x -= fx; v2a.y -= fy;
+    v2b.x -= fx; v2b.y -= fy;
   }
 
   function orgCenterX(org) {
@@ -295,7 +347,7 @@
       const strength = i === POP_SIZE - 1 ? 0.6 : 0.22; // último é explorador (mutação alta)
       organisms.push(makeOrganism(mutateGenome(baseGenome, strength), i));
     }
-    camX = 0;
+    camX = 180;
     if (autoBoom) autoBoomNext = performance.now() + (+autoSecs.value || 12) * 1000;
   }
 
@@ -314,43 +366,60 @@
   function onDown(e) {
     if (state !== STATE.DRAWING) return;
     const p = eventXY(e);
-    const idx = vertexNear(p.x, p.y);
-    if (idx >= 0) {
-      dragStartIdx = idx;
-      dragStart = { x: tVertices[idx].x, y: tVertices[idx].y };
-    } else {
-      // clica em espaço vazio: adiciona vértice E começa drag dele
-      const newIdx = addVertex(p.x, p.y);
-      dragStartIdx = newIdx;
-      dragStart = { x: p.x, y: p.y };
-    }
+    dragStart = { x: p.x, y: p.y };
     dragEnd = { x: p.x, y: p.y };
+    dragStartV = -1; dragStartB = -1;
+    if (placementMode === 'joint') {
+      // só vai adicionar no onUp se for um clique (sem arrastar)
+    } else if (placementMode === 'bone') {
+      // tenta começar de uma articulação
+      dragStartV = vertexNear(p.x, p.y);
+    } else if (placementMode === 'muscle') {
+      // tenta começar de um osso
+      dragStartB = boneNear(p.x, p.y);
+    }
   }
   function onMove(e) {
     const p = eventXY(e);
     if (state === STATE.DRAWING) {
-      hoverIdx = vertexNear(p.x, p.y);
+      hoverV = vertexNear(p.x, p.y);
+      hoverB = (placementMode === 'muscle') ? boneNear(p.x, p.y) : -1;
       if (dragStart) dragEnd = { x: p.x, y: p.y };
     }
   }
   function onUp(e) {
-    if (state !== STATE.DRAWING || !dragStart) { dragStart = null; dragStartIdx = -1; dragEnd = null; return; }
+    if (state !== STATE.DRAWING || !dragStart) {
+      dragStart = null; dragStartV = -1; dragStartB = -1; dragEnd = null; return;
+    }
     const p = e && (e.changedTouches ? e.changedTouches[0] : e);
     const px = p ? (p.clientX != null ? p.clientX : dragEnd.x) : dragEnd.x;
     const py = p ? (p.clientY != null ? p.clientY : dragEnd.y) : dragEnd.y;
-    // se moveu suficiente, cria ligação até onde soltou
     const dx = px - dragStart.x, dy = py - dragStart.y;
     const dragLen = Math.sqrt(dx * dx + dy * dy);
-    if (dragLen > 10) {
-      const targetIdx = vertexNear(px, py);
-      let endIdx = targetIdx;
-      if (endIdx < 0 || endIdx === dragStartIdx) {
-        endIdx = addVertex(px, py);
+    if (placementMode === 'joint') {
+      // clique simples (sem arrastar muito) adiciona uma articulação
+      if (dragLen < 10) addVertex(px, py);
+      else flash('no modo articulação, só clique pra colocar pontos');
+    } else if (placementMode === 'bone') {
+      // arrasta de articulação para articulação
+      if (dragStartV < 0) flash('osso precisa começar numa articulação');
+      else if (dragLen > 10) {
+        const endV = vertexNear(px, py);
+        if (endV < 0) flash('osso precisa terminar numa articulação');
+        else if (endV === dragStartV) flash('articulações precisam ser diferentes');
+        else if (!addBone(dragStartV, endV)) flash('esse osso já existe');
       }
-      if (placementMode === 'bone') addBone(dragStartIdx, endIdx);
-      else addMuscle(dragStartIdx, endIdx);
+    } else if (placementMode === 'muscle') {
+      // arrasta de osso para osso
+      if (dragStartB < 0) flash('músculo precisa começar num osso');
+      else if (dragLen > 10) {
+        const endB = boneNear(px, py);
+        if (endB < 0) flash('músculo precisa terminar num osso');
+        else if (endB === dragStartB) flash('ossos precisam ser diferentes');
+        else if (!addMuscle(dragStartB, endB)) flash('esse músculo já existe');
+      }
     }
-    dragStart = null; dragStartIdx = -1; dragEnd = null;
+    dragStart = null; dragStartV = -1; dragStartB = -1; dragEnd = null;
   }
 
   // ---- render
@@ -368,12 +437,14 @@
     ctx.stroke();
 
     if (state === STATE.EVOLVING) {
-      // marcas de 50 px (rolando com a câmera)
-      ctx.strokeStyle = 'rgba(120, 220, 210, 0.15)';
+      // marcas no chão (escala com zoom — mostra distância percorrida)
+      ctx.strokeStyle = 'rgba(120, 220, 210, 0.18)';
       ctx.lineWidth = 1;
-      const tickStart = Math.floor(camX / 50) * 50;
-      for (let x = tickStart; x < tickStart + W + 50; x += 50) {
-        const sx = x - camX;
+      const halfWorld = W / 2 / camScale;
+      const startMark = Math.floor((camX - halfWorld) / 50) * 50;
+      const endMark = Math.ceil((camX + halfWorld) / 50) * 50;
+      for (let x = startMark; x <= endMark; x += 50) {
+        const sx = projX(x);
         ctx.beginPath();
         ctx.moveTo(sx, floorY);
         ctx.lineTo(sx, floorY + (x % 200 === 0 ? 12 : 6));
@@ -386,43 +457,55 @@
   }
 
   function drawTemplate(floorY) {
-    // dica visual: linha do chão
     if (tVertices.length === 0) {
       ctx.fillStyle = 'rgba(150, 220, 210, 0.4)';
       ctx.font = '13px serif';
       ctx.textAlign = 'center';
-      ctx.fillText('clique aqui pra começar', W / 2, H / 2);
+      ctx.fillText('clique pra colocar a primeira articulação', W / 2, H / 2);
     }
-    // ossos
-    ctx.lineWidth = 2.2;
-    ctx.strokeStyle = 'rgba(210, 235, 230, 0.95)';
-    for (const b of tBones) {
+    // ossos (linha sólida, destaca o hovered no modo músculo)
+    for (let i = 0; i < tBones.length; i++) {
+      const b = tBones[i];
       const v1 = tVertices[b.a], v2 = tVertices[b.b];
+      const isStart = i === dragStartB;
+      const isHover = (placementMode === 'muscle' && i === hoverB && !isStart);
+      ctx.strokeStyle = isStart ? 'rgba(255, 200, 130, 1)'
+                      : isHover ? 'rgba(180, 235, 220, 1)'
+                      : 'rgba(210, 235, 230, 0.92)';
+      ctx.lineWidth = (isStart || isHover) ? 3 : 2.2;
       ctx.beginPath(); ctx.moveTo(v1.x, v1.y); ctx.lineTo(v2.x, v2.y); ctx.stroke();
     }
-    // músculos (linha tracejada vermelha)
+    // músculos: linha tracejada entre os midpoints dos dois ossos
     ctx.strokeStyle = 'rgba(255, 130, 150, 0.85)';
     ctx.lineWidth = 1.8;
     ctx.setLineDash([6, 5]);
     for (const m of tMuscles) {
-      const v1 = tVertices[m.a], v2 = tVertices[m.b];
-      ctx.beginPath(); ctx.moveTo(v1.x, v1.y); ctx.lineTo(v2.x, v2.y); ctx.stroke();
+      const m1 = boneMid(m.ba), m2 = boneMid(m.bb);
+      ctx.beginPath(); ctx.moveTo(m1.x, m1.y); ctx.lineTo(m2.x, m2.y); ctx.stroke();
+      // pequenos discos nos pontos de fixação
+      ctx.fillStyle = 'rgba(255, 130, 150, 0.7)';
+      ctx.beginPath(); ctx.arc(m1.x, m1.y, 3, 0, TAU); ctx.fill();
+      ctx.beginPath(); ctx.arc(m2.x, m2.y, 3, 0, TAU); ctx.fill();
     }
     ctx.setLineDash([]);
     // preview do drag
     if (dragStart && dragEnd) {
-      const isMuscle = placementMode === 'muscle';
-      ctx.strokeStyle = isMuscle ? 'rgba(255, 130, 150, 0.5)' : 'rgba(210, 235, 230, 0.5)';
-      ctx.lineWidth = 1.6;
-      if (isMuscle) ctx.setLineDash([6, 5]);
-      ctx.beginPath(); ctx.moveTo(dragStart.x, dragStart.y); ctx.lineTo(dragEnd.x, dragEnd.y); ctx.stroke();
-      ctx.setLineDash([]);
+      const dx = dragEnd.x - dragStart.x, dy = dragEnd.y - dragStart.y;
+      if (dx * dx + dy * dy > 100) {
+        const isMuscle = placementMode === 'muscle';
+        const isBone = placementMode === 'bone';
+        ctx.strokeStyle = isMuscle ? 'rgba(255, 130, 150, 0.55)' : isBone ? 'rgba(210, 235, 230, 0.55)' : 'rgba(150, 220, 210, 0.4)';
+        ctx.lineWidth = 1.6;
+        if (isMuscle) ctx.setLineDash([6, 5]);
+        ctx.beginPath(); ctx.moveTo(dragStart.x, dragStart.y); ctx.lineTo(dragEnd.x, dragEnd.y); ctx.stroke();
+        ctx.setLineDash([]);
+      }
     }
-    // vértices
+    // articulações
     for (let i = 0; i < tVertices.length; i++) {
       const v = tVertices[i];
-      const isHover = i === hoverIdx;
-      const isStart = i === dragStartIdx;
+      const isHover = (placementMode !== 'muscle' && i === hoverV);
+      const isStart = i === dragStartV;
       ctx.fillStyle = isStart ? 'rgba(255, 200, 130, 1)' : isHover ? 'rgba(180, 235, 220, 1)' : 'rgba(140, 215, 205, 0.9)';
       ctx.beginPath(); ctx.arc(v.x, v.y, isHover || isStart ? VERTEX_R + 1 : VERTEX_R, 0, TAU); ctx.fill();
     }
@@ -457,27 +540,38 @@
   }
 
   function drawOrganism(org, isElite, isLeader) {
-    const ofs = -camX;
-    // músculos (mostra contração com cor variando)
-    for (const m of org.muscles) {
-      const v1 = org.vertices[m.a], v2 = org.vertices[m.b];
-      const phase = (Math.sin(org.time * m.freq + m.phase) + 1) * 0.5; // 0..1
-      const a = isElite ? 0.85 : isLeader ? 0.7 : 0.45;
-      ctx.strokeStyle = 'hsla(' + (org.hue + phase * 40) + ', 75%, ' + (55 + phase * 15) + '%, ' + a + ')';
-      ctx.lineWidth = isElite ? 2.6 : isLeader ? 2.2 : 1.6;
-      ctx.beginPath(); ctx.moveTo(v1.x + ofs, v1.y); ctx.lineTo(v2.x + ofs, v2.y); ctx.stroke();
-    }
     // ossos
-    ctx.strokeStyle = isElite ? 'rgba(220, 240, 235, 0.95)' : isLeader ? 'rgba(200, 230, 225, 0.85)' : 'rgba(180, 215, 210, 0.5)';
-    ctx.lineWidth = isElite ? 2.4 : isLeader ? 2.0 : 1.4;
+    ctx.strokeStyle = isElite ? 'rgba(220, 240, 235, 0.95)' : isLeader ? 'rgba(200, 230, 225, 0.85)' : 'rgba(180, 215, 210, 0.55)';
+    ctx.lineWidth = isElite ? 2.6 : isLeader ? 2.2 : 1.6;
     for (const b of org.bones) {
       const v1 = org.vertices[b.a], v2 = org.vertices[b.b];
-      ctx.beginPath(); ctx.moveTo(v1.x + ofs, v1.y); ctx.lineTo(v2.x + ofs, v2.y); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(projX(v1.x), projY(v1.y));
+      ctx.lineTo(projX(v2.x), projY(v2.y));
+      ctx.stroke();
     }
-    // vértices (articulações)
-    ctx.fillStyle = isElite ? 'rgba(255, 200, 130, 0.95)' : isLeader ? 'rgba(255, 170, 190, 0.85)' : 'rgba(150, 220, 210, 0.6)';
+    // músculos: linha entre os midpoints dos dois ossos, cor varia com a fase de contração
+    for (const m of org.muscles) {
+      const b1 = org.bones[m.ba], b2 = org.bones[m.bb];
+      const v1a = org.vertices[b1.a], v1b = org.vertices[b1.b];
+      const v2a = org.vertices[b2.a], v2b = org.vertices[b2.b];
+      const m1x = (v1a.x + v1b.x) * 0.5, m1y = (v1a.y + v1b.y) * 0.5;
+      const m2x = (v2a.x + v2b.x) * 0.5, m2y = (v2a.y + v2b.y) * 0.5;
+      const phase = (Math.sin(org.time * m.freq + m.phase) + 1) * 0.5;
+      const a = isElite ? 0.92 : isLeader ? 0.78 : 0.55;
+      ctx.strokeStyle = 'hsla(' + (org.hue + phase * 40) + ', 75%, ' + (55 + phase * 18) + '%, ' + a + ')';
+      ctx.lineWidth = isElite ? 2.4 : isLeader ? 2.0 : 1.5;
+      ctx.beginPath();
+      ctx.moveTo(projX(m1x), projY(m1y));
+      ctx.lineTo(projX(m2x), projY(m2y));
+      ctx.stroke();
+    }
+    // articulações
+    ctx.fillStyle = isElite ? 'rgba(255, 200, 130, 0.95)' : isLeader ? 'rgba(255, 170, 190, 0.85)' : 'rgba(150, 220, 210, 0.7)';
     for (const v of org.vertices) {
-      ctx.beginPath(); ctx.arc(v.x + ofs, v.y, isElite ? 4 : 3, 0, TAU); ctx.fill();
+      ctx.beginPath();
+      ctx.arc(projX(v.x), projY(v.y), isElite ? 4 : 3, 0, TAU);
+      ctx.fill();
     }
   }
 
@@ -497,12 +591,13 @@
       for (let s = 0; s < 1; s++) {
         for (const org of organisms) step(org, 1);
       }
-      // câmera segue a média ponderada (puxando levemente o líder)
-      let avg = 0;
-      for (const o of organisms) avg += orgCenterX(o);
-      avg /= organisms.length;
-      const target = Math.max(0, avg - W * 0.35);
-      camX = lerp(camX, target, 0.05);
+      // câmera segue o LÍDER (o organismo mais à direita)
+      let leaderX = -Infinity;
+      for (const o of organisms) {
+        const cx = orgCenterX(o);
+        if (cx > leaderX) leaderX = cx;
+      }
+      if (leaderX > -Infinity) camX = lerp(camX, leaderX, 0.08);
       // auto-boom
       if (autoBoom && performance.now() >= autoBoomNext) boom();
     }
