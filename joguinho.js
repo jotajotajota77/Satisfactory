@@ -35,10 +35,14 @@
   const FRICTION_GROUND = 0.42; // 0 = escorregadio, 1 = grudado
   const VERTEX_R = 6;
   const POP_SIZE = 6;
-  const FLOOR_PAD = 110; // pixels do chão até a borda inferior (espaço pra régua)
+  const FLOOR_PAD = 150; // pixels do chão até a borda inferior (espaço pra régua + controles)
   const STEP_DT = 0.6;   // dt do mundo por quadro real (slower = menos louco)
   const MUSCLE_K = 0.35; // força do músculo na restrição
   const START_X = 180;
+  // rede neural feedforward: entradas -> camada escondida -> ativação por músculo
+  // entradas: [sin(t·ω), cos(t·ω), %articulações no chão, altura média, inclinação, bias]
+  const NN_INPUTS = 6;
+  const NN_HIDDEN = 6;
 
   // ---- estado
   const STATE = { DRAWING: 0, EVOLVING: 1 };
@@ -70,6 +74,9 @@
   let autoBoomNext = 0;
   let autoBoomLastShown = 0;
 
+  // velocidade da simulação
+  let speedMult = 1;
+
   // câmera (rola na evolução, com zoom out)
   let camX = 0;
   let camScale = 0.55; // zoom out: vê quase 2x mais área que sem zoom
@@ -90,6 +97,7 @@
   const autoToggle = document.getElementById('auto-toggle');
   const autoSecs = document.getElementById('auto-secs');
   const backBtn = document.getElementById('back-btn');
+  const speedToggle = document.getElementById('speed-toggle');
 
   function setMode(m) {
     placementMode = m;
@@ -106,6 +114,13 @@
   boomBtn.addEventListener('click', boom);
   autoToggle.addEventListener('click', () => setAutoBoom(!autoBoom));
   backBtn.addEventListener('click', backToDrawing);
+  speedToggle.addEventListener('click', () => setSpeed(speedMult === 1 ? 5 : 1));
+
+  function setSpeed(mult) {
+    speedMult = mult;
+    speedToggle.classList.toggle('on', mult > 1);
+    speedToggle.textContent = mult > 1 ? 'rápido ×' + mult : 'rápido';
+  }
 
   function setAutoBoom(on) {
     autoBoom = !!on;
@@ -188,6 +203,7 @@
     state = STATE.EVOLVING;
     drawCtrl.classList.add('hidden');
     evolCtrl.classList.remove('hidden');
+    if (infoEl) infoEl.style.display = 'none';
     generation = 1;
     bestEverDistance = 0;
     flagX = START_X; // bandeira começa na linha de partida
@@ -202,27 +218,36 @@
     organisms = [];
     drawCtrl.classList.remove('hidden');
     evolCtrl.classList.add('hidden');
+    if (infoEl) infoEl.style.display = '';
     setAutoBoom(false);
+    setSpeed(1);
   }
 
   // ---- genoma e organismo
   function randomGenome() {
-    const g = [];
-    for (let i = 0; i < tMuscles.length; i++) {
-      g.push({
-        freq: rand(0.012, 0.07),  // oscilação mais lenta
-        phase: rand(TAU),
-        amp: rand(0.08, 0.28),    // contração menor (evita giros bruscos)
-      });
-    }
-    return g;
+    const M = tMuscles.length;
+    const W1 = new Array(NN_INPUTS * NN_HIDDEN);
+    for (let i = 0; i < W1.length; i++) W1[i] = (Math.random() - 0.5) * 1.6;
+    const W2 = new Array(NN_HIDDEN * M);
+    for (let i = 0; i < W2.length; i++) W2[i] = (Math.random() - 0.5) * 1.6;
+    const amp = new Array(M);
+    for (let i = 0; i < M; i++) amp[i] = rand(0.10, 0.28);
+    return {
+      baseFreq: rand(0.04, 0.13), // relógio interno (ω) que vira sin/cos de entrada
+      amp, W1, W2,
+    };
   }
   function mutateGenome(g, strength) {
-    return g.map((gene) => ({
-      freq: clamp(gene.freq + (Math.random() - 0.5) * strength * 0.04 + (Math.random() < 0.03 ? (Math.random() - 0.5) * 0.08 : 0), 0.005, 0.2),
-      phase: gene.phase + (Math.random() - 0.5) * strength * TAU * 0.3,
-      amp: clamp(gene.amp + (Math.random() - 0.5) * strength * 0.12 + (Math.random() < 0.03 ? (Math.random() - 0.5) * 0.2 : 0), 0.04, 0.5),
-    }));
+    function jit(x, scale) {
+      const big = Math.random() < 0.04;
+      return x + (Math.random() - 0.5) * strength * (big ? scale * 4 : scale);
+    }
+    return {
+      baseFreq: clamp(jit(g.baseFreq, 0.03), 0.01, 0.3),
+      amp: g.amp.map(a => clamp(jit(a, 0.10), 0.04, 0.5)),
+      W1: g.W1.map(w => jit(w, 0.25)),
+      W2: g.W2.map(w => jit(w, 0.25)),
+    };
   }
 
   function makeOrganism(genome, idx) {
@@ -252,30 +277,76 @@
       const bb = tBones[boneIdx];
       return { x: (tVertices[bb.a].x + tVertices[bb.b].x) * 0.5, y: (tVertices[bb.a].y + tVertices[bb.b].y) * 0.5 };
     }
-    const muscles = tMuscles.map((m, i) => {
+    const muscles = tMuscles.map((m) => {
       const m1 = midOf(m.ba), m2 = midOf(m.bb);
       const base = Math.max(2, dist(m1, m2));
-      return {
-        ba: m.ba, bb: m.bb, base,
-        freq: genome[i].freq,
-        phase: genome[i].phase,
-        amp: genome[i].amp,
-      };
+      return { ba: m.ba, bb: m.bb, base };
     });
     return {
       vertices, bones, muscles,
       time: 0, startX,
       genome,
+      activations: new Array(muscles.length).fill(0),
       hue: (idx * 53) % 360,
     };
   }
-  function cloneGenome(g) { return g.map(x => ({ freq: x.freq, phase: x.phase, amp: x.amp })); }
+  function cloneGenome(g) {
+    return {
+      baseFreq: g.baseFreq,
+      amp: g.amp.slice(),
+      W1: g.W1.slice(),
+      W2: g.W2.slice(),
+    };
+  }
+  // forward pass da rede: lê o estado do organismo, produz ativações [-1,1] dos músculos
+  function controllerActivations(org, floorY) {
+    let groundCount = 0, sumHeight = 0, sumVert = 0;
+    for (const v of org.vertices) {
+      if (v.y >= floorY - 2) groundCount++;
+      sumHeight += (floorY - v.y);
+    }
+    for (const b of org.bones) {
+      const v1 = org.vertices[b.a], v2 = org.vertices[b.b];
+      const dx = v2.x - v1.x, dy = v2.y - v1.y;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len > 0.01) sumVert += dy / len;
+    }
+    const groundFrac = groundCount / org.vertices.length;
+    const avgHeight = sumHeight / Math.max(1, org.vertices.length);
+    const tilt = sumVert / Math.max(1, org.bones.length);
+    const omega = org.genome.baseFreq;
+    const sensors = [
+      Math.sin(org.time * omega),
+      Math.cos(org.time * omega),
+      groundFrac * 2 - 1,                    // [-1,1]
+      clamp(avgHeight / 200, 0, 1) * 2 - 1,  // altura média normalizada
+      clamp(tilt, -1, 1),                    // inclinação média dos ossos
+      1,                                     // bias
+    ];
+    const W1 = org.genome.W1, W2 = org.genome.W2;
+    const hidden = new Array(NN_HIDDEN);
+    for (let h = 0; h < NN_HIDDEN; h++) {
+      let s = 0;
+      for (let i = 0; i < NN_INPUTS; i++) s += sensors[i] * W1[i * NN_HIDDEN + h];
+      hidden[h] = Math.tanh(s);
+    }
+    const M = org.muscles.length;
+    const acts = new Array(M);
+    for (let m = 0; m < M; m++) {
+      let s = 0;
+      for (let h = 0; h < NN_HIDDEN; h++) s += hidden[h] * W2[h * M + m];
+      acts[m] = Math.tanh(s);
+    }
+    return acts;
+  }
   function dist(a, b) { const dx = a.x - b.x, dy = a.y - b.y; return Math.sqrt(dx * dx + dy * dy); }
 
   // ---- física (Verlet)
   function step(org, dt) {
     org.time += dt;
     const floorY = H - FLOOR_PAD;
+    // rede neural calcula a ativação de cada músculo a partir do estado atual
+    org.activations = controllerActivations(org, floorY);
     // integração
     for (const v of org.vertices) {
       const vx = (v.x - v.px) * VELOCITY_DAMPING;
@@ -287,8 +358,10 @@
     // restrições
     for (let it = 0; it < ITERATIONS; it++) {
       for (const b of org.bones) satisfyDistance(org.vertices[b.a], org.vertices[b.b], b.length, 0.5);
-      for (const m of org.muscles) {
-        const target = Math.max(2, m.base * (1 + m.amp * Math.sin(org.time * m.freq + m.phase)));
+      for (let mi = 0; mi < org.muscles.length; mi++) {
+        const m = org.muscles[mi];
+        const amp = org.genome.amp[mi];
+        const target = Math.max(2, m.base * (1 + amp * org.activations[mi]));
         satisfyMuscle(org, m, target, MUSCLE_K);
       }
       // chão + atrito
@@ -519,17 +592,20 @@
       const isLeader = (orgCenterX(org) - org.startX) === leaderDist;
       drawOrganism(org, isElite, isLeader);
     }
-    // HUD
+    // HUD (centro superior pra não brigar com o link "← ecossistema" e a bandeira)
     ctx.fillStyle = 'rgba(190, 235, 225, 0.85)';
     ctx.font = '13px serif';
-    ctx.textAlign = 'left';
-    ctx.fillText('geração ' + generation, 20, 30);
-    ctx.textAlign = 'right';
-    ctx.fillText('líder: ' + Math.round(leaderDist) + ' px', W - 20, 30);
+    ctx.textAlign = 'center';
+    ctx.fillText('geração ' + generation + ' · líder ' + Math.round(leaderDist) + ' px', W / 2, 28);
     if (autoBoom) {
       const remaining = Math.max(0, Math.round((autoBoomNext - performance.now()) / 1000));
       ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
-      ctx.fillText('próximo boom em ' + remaining + 's', W - 20, 52);
+      ctx.fillText('próximo boom em ' + remaining + 's', W / 2, 48);
+    }
+    if (speedMult > 1) {
+      ctx.fillStyle = 'rgba(150, 230, 220, 0.7)';
+      ctx.font = '11px serif';
+      ctx.fillText('rápido ×' + speedMult, W / 2, autoBoom ? 66 : 48);
     }
   }
 
@@ -553,7 +629,7 @@
       ctx.lineTo(sx, floorY + (isLabel ? 12 : 6));
       ctx.stroke();
       if (isLabel) {
-        ctx.fillText(dist === 0 ? '0' : (dist + ' px'), sx, floorY + 26);
+        ctx.fillText(dist === 0 ? '0' : (dist + ''), sx, floorY + 20);
       }
     }
     // marca da linha de partida
@@ -605,13 +681,15 @@
       ctx.stroke();
     }
     // músculos: linha entre os midpoints dos dois ossos, cor varia com a fase de contração
-    for (const m of org.muscles) {
+    for (let mi = 0; mi < org.muscles.length; mi++) {
+      const m = org.muscles[mi];
       const b1 = org.bones[m.ba], b2 = org.bones[m.bb];
       const v1a = org.vertices[b1.a], v1b = org.vertices[b1.b];
       const v2a = org.vertices[b2.a], v2b = org.vertices[b2.b];
       const m1x = (v1a.x + v1b.x) * 0.5, m1y = (v1a.y + v1b.y) * 0.5;
       const m2x = (v2a.x + v2b.x) * 0.5, m2y = (v2a.y + v2b.y) * 0.5;
-      const phase = (Math.sin(org.time * m.freq + m.phase) + 1) * 0.5;
+      const act = (org.activations && org.activations[mi]) || 0;
+      const phase = (act + 1) * 0.5;
       const a = isElite ? 0.92 : isLeader ? 0.78 : 0.55;
       ctx.strokeStyle = 'hsla(' + (org.hue + phase * 40) + ', 75%, ' + (55 + phase * 18) + '%, ' + a + ')';
       ctx.lineWidth = isElite ? 2.4 : isLeader ? 2.0 : 1.5;
@@ -642,7 +720,10 @@
     const dt = Math.min(2, (ts - lastTs) / 16 || 1); // unidades aproximadas
     lastTs = ts;
     if (state === STATE.EVOLVING) {
-      for (const org of organisms) step(org, STEP_DT);
+      // executa N passos por quadro real quando "rápido" ligado
+      for (let s = 0; s < speedMult; s++) {
+        for (const org of organisms) step(org, STEP_DT);
+      }
       // câmera segue o LÍDER (mais à direita) + atualiza recorde da bandeira
       let leaderX = -Infinity;
       for (const o of organisms) {
