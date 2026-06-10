@@ -105,6 +105,40 @@ html, body {
   outline: none;
 }
 .ctrl-input:focus { border-color: rgba(150, 235, 215, 0.45); }
+
+.ctrl-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 140px;
+  height: 4px;
+  background: rgba(150, 235, 215, 0.22);
+  border-radius: 4px;
+  outline: none;
+  cursor: pointer;
+}
+.ctrl-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 200, 130, 0.92);
+  border: 1px solid rgba(255, 200, 130, 0.6);
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(255, 200, 130, 0.4);
+}
+.ctrl-slider::-moz-range-thumb {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: rgba(255, 200, 130, 0.92);
+  border: 1px solid rgba(255, 200, 130, 0.6);
+  cursor: pointer;
+  box-shadow: 0 0 12px rgba(255, 200, 130, 0.4);
+}
+@media (max-width: 720px) {
+  .ctrl-slider { width: 100px; }
+}
 .lbl {
   font-size: 11px;
   letter-spacing: 0.2em;

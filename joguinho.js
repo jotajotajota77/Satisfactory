@@ -74,8 +74,9 @@
   let autoBoomNext = 0;
   let autoBoomLastShown = 0;
 
-  // velocidade da simulação
+  // velocidade da simulação (slider 0.1×–10×) com acumulador fracionário
   let speedMult = 1;
+  let stepAccum = 0;
 
   // câmera (rola na evolução, com zoom out)
   let camX = 0;
@@ -97,7 +98,8 @@
   const autoToggle = document.getElementById('auto-toggle');
   const autoSecs = document.getElementById('auto-secs');
   const backBtn = document.getElementById('back-btn');
-  const speedToggle = document.getElementById('speed-toggle');
+  const speedSlider = document.getElementById('speed-slider');
+  const speedLabel = document.getElementById('speed-label');
 
   function setMode(m) {
     placementMode = m;
@@ -114,13 +116,12 @@
   boomBtn.addEventListener('click', boom);
   autoToggle.addEventListener('click', () => setAutoBoom(!autoBoom));
   backBtn.addEventListener('click', backToDrawing);
-  speedToggle.addEventListener('click', () => setSpeed(speedMult === 1 ? 5 : 1));
-
   function setSpeed(mult) {
-    speedMult = mult;
-    speedToggle.classList.toggle('on', mult > 1);
-    speedToggle.textContent = mult > 1 ? 'rápido ×' + mult : 'rápido';
+    speedMult = clamp(+mult || 1, 0.1, 10);
+    if (speedSlider) speedSlider.value = String(speedMult);
+    if (speedLabel) speedLabel.textContent = speedMult.toFixed(1) + '×';
   }
+  if (speedSlider) speedSlider.addEventListener('input', () => setSpeed(speedSlider.value));
 
   function setAutoBoom(on) {
     autoBoom = !!on;
@@ -221,6 +222,7 @@
     if (infoEl) infoEl.style.display = '';
     setAutoBoom(false);
     setSpeed(1);
+    stepAccum = 0;
   }
 
   // ---- genoma e organismo
@@ -602,10 +604,10 @@
       ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
       ctx.fillText('próximo boom em ' + remaining + 's', W / 2, 48);
     }
-    if (speedMult > 1) {
-      ctx.fillStyle = 'rgba(150, 230, 220, 0.7)';
+    if (Math.abs(speedMult - 1) > 0.05) {
+      ctx.fillStyle = speedMult > 1 ? 'rgba(255, 200, 130, 0.85)' : 'rgba(150, 230, 220, 0.7)';
       ctx.font = '11px serif';
-      ctx.fillText('rápido ×' + speedMult, W / 2, autoBoom ? 66 : 48);
+      ctx.fillText(speedMult.toFixed(1) + '×', W / 2, autoBoom ? 66 : 48);
     }
   }
 
@@ -720,9 +722,13 @@
     const dt = Math.min(2, (ts - lastTs) / 16 || 1); // unidades aproximadas
     lastTs = ts;
     if (state === STATE.EVOLVING) {
-      // executa N passos por quadro real quando "rápido" ligado
-      for (let s = 0; s < speedMult; s++) {
+      // velocidade variável: acumulador fracionário deixa < 1× (passo só a cada
+      // alguns quadros) e > 1× (vários passos por quadro) sem perder precisão.
+      stepAccum += speedMult;
+      let safety = 0;
+      while (stepAccum >= 1 && safety++ < 50) {
         for (const org of organisms) step(org, STEP_DT);
+        stepAccum -= 1;
       }
       // câmera segue o LÍDER (mais à direita) + atualiza recorde da bandeira
       let leaderX = -Infinity;
