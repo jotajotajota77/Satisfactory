@@ -30,12 +30,15 @@
 
   // ---- constantes da física
   const GRAVITY = 0.45;
-  const VELOCITY_DAMPING = 0.992;
+  const VELOCITY_DAMPING = 0.985;
   const ITERATIONS = 8;
-  const FRICTION_GROUND = 0.32; // 0 = escorregadio, 1 = grudado
+  const FRICTION_GROUND = 0.42; // 0 = escorregadio, 1 = grudado
   const VERTEX_R = 6;
   const POP_SIZE = 6;
-  const FLOOR_PAD = 90; // pixels do chão até a borda inferior
+  const FLOOR_PAD = 110; // pixels do chão até a borda inferior (espaço pra régua)
+  const STEP_DT = 0.6;   // dt do mundo por quadro real (slower = menos louco)
+  const MUSCLE_K = 0.35; // força do músculo na restrição
+  const START_X = 180;
 
   // ---- estado
   const STATE = { DRAWING: 0, EVOLVING: 1 };
@@ -60,6 +63,7 @@
   let organisms = [];
   let generation = 0;
   let bestEverDistance = 0;
+  let flagX = START_X; // posição X (mundo) da bandeira: o mais longe já alcançado nesta sessão
 
   // auto-boom
   let autoBoom = false;
@@ -186,7 +190,8 @@
     evolCtrl.classList.remove('hidden');
     generation = 1;
     bestEverDistance = 0;
-    camX = 180; // matches startX no makeOrganism
+    flagX = START_X; // bandeira começa na linha de partida
+    camX = START_X;
     organisms = [];
     for (let i = 0; i < POP_SIZE; i++) organisms.push(makeOrganism(randomGenome(), i));
     if (autoBoom) autoBoomNext = performance.now() + (+autoSecs.value || 12) * 1000;
@@ -205,18 +210,18 @@
     const g = [];
     for (let i = 0; i < tMuscles.length; i++) {
       g.push({
-        freq: rand(0.03, 0.18),
+        freq: rand(0.012, 0.07),  // oscilação mais lenta
         phase: rand(TAU),
-        amp: rand(0.15, 0.55),
+        amp: rand(0.08, 0.28),    // contração menor (evita giros bruscos)
       });
     }
     return g;
   }
   function mutateGenome(g, strength) {
     return g.map((gene) => ({
-      freq: clamp(gene.freq + (Math.random() - 0.5) * strength * 0.08 + (Math.random() < 0.03 ? (Math.random() - 0.5) * 0.2 : 0), 0.02, 0.4),
-      phase: gene.phase + (Math.random() - 0.5) * strength * TAU * 0.4,
-      amp: clamp(gene.amp + (Math.random() - 0.5) * strength * 0.25 + (Math.random() < 0.03 ? (Math.random() - 0.5) * 0.4 : 0), 0.05, 0.7),
+      freq: clamp(gene.freq + (Math.random() - 0.5) * strength * 0.04 + (Math.random() < 0.03 ? (Math.random() - 0.5) * 0.08 : 0), 0.005, 0.2),
+      phase: gene.phase + (Math.random() - 0.5) * strength * TAU * 0.3,
+      amp: clamp(gene.amp + (Math.random() - 0.5) * strength * 0.12 + (Math.random() < 0.03 ? (Math.random() - 0.5) * 0.2 : 0), 0.04, 0.5),
     }));
   }
 
@@ -230,7 +235,7 @@
     }
     const centerX = sumX / tVertices.length;
     const floorY = H - FLOOR_PAD;
-    const startX = 180;
+    const startX = START_X;
     const dx = startX - centerX;
     const dy = (floorY - 4) - maxY;
     const vertices = tVertices.map(t => {
@@ -284,7 +289,7 @@
       for (const b of org.bones) satisfyDistance(org.vertices[b.a], org.vertices[b.b], b.length, 0.5);
       for (const m of org.muscles) {
         const target = Math.max(2, m.base * (1 + m.amp * Math.sin(org.time * m.freq + m.phase)));
-        satisfyMuscle(org, m, target, 0.5);
+        satisfyMuscle(org, m, target, MUSCLE_K);
       }
       // chão + atrito
       for (const v of org.vertices) {
@@ -347,7 +352,7 @@
       const strength = i === POP_SIZE - 1 ? 0.6 : 0.22; // último é explorador (mutação alta)
       organisms.push(makeOrganism(mutateGenome(baseGenome, strength), i));
     }
-    camX = 180;
+    camX = START_X;
     if (autoBoom) autoBoomNext = performance.now() + (+autoSecs.value || 12) * 1000;
   }
 
@@ -437,19 +442,8 @@
     ctx.stroke();
 
     if (state === STATE.EVOLVING) {
-      // marcas no chão (escala com zoom — mostra distância percorrida)
-      ctx.strokeStyle = 'rgba(120, 220, 210, 0.18)';
-      ctx.lineWidth = 1;
-      const halfWorld = W / 2 / camScale;
-      const startMark = Math.floor((camX - halfWorld) / 50) * 50;
-      const endMark = Math.ceil((camX + halfWorld) / 50) * 50;
-      for (let x = startMark; x <= endMark; x += 50) {
-        const sx = projX(x);
-        ctx.beginPath();
-        ctx.moveTo(sx, floorY);
-        ctx.lineTo(sx, floorY + (x % 200 === 0 ? 12 : 6));
-        ctx.stroke();
-      }
+      drawRuler(floorY);
+      drawFlag(floorY);
       drawOrganisms(floorY);
     } else {
       drawTemplate(floorY);
@@ -529,14 +523,74 @@
     ctx.fillStyle = 'rgba(190, 235, 225, 0.85)';
     ctx.font = '13px serif';
     ctx.textAlign = 'left';
-    ctx.fillText('geração ' + generation, 20, H - 16);
-    ctx.fillText('distância: ' + Math.round(leaderDist) + ' px · melhor histórica: ' + Math.round(bestEverDistance) + ' px', 130, H - 16);
+    ctx.fillText('geração ' + generation, 20, 30);
+    ctx.textAlign = 'right';
+    ctx.fillText('líder: ' + Math.round(leaderDist) + ' px', W - 20, 30);
     if (autoBoom) {
       const remaining = Math.max(0, Math.round((autoBoomNext - performance.now()) / 1000));
-      ctx.textAlign = 'right';
       ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
-      ctx.fillText('próximo boom em ' + remaining + 's', W - 20, H - 16);
+      ctx.fillText('próximo boom em ' + remaining + 's', W - 20, 52);
     }
+  }
+
+  function drawRuler(floorY) {
+    const tickInterval = 50;
+    const labelInterval = 200;
+    const halfWorld = W / 2 / camScale;
+    const startMark = Math.floor((camX - halfWorld) / tickInterval) * tickInterval;
+    const endMark = Math.ceil((camX + halfWorld) / tickInterval) * tickInterval;
+    ctx.strokeStyle = 'rgba(120, 220, 210, 0.32)';
+    ctx.fillStyle = 'rgba(150, 230, 220, 0.7)';
+    ctx.font = '10px serif';
+    ctx.textAlign = 'center';
+    for (let x = startMark; x <= endMark; x += tickInterval) {
+      const sx = projX(x);
+      const dist = x - START_X;
+      const isLabel = (((dist % labelInterval) + labelInterval) % labelInterval) === 0;
+      ctx.lineWidth = isLabel ? 1.2 : 0.8;
+      ctx.beginPath();
+      ctx.moveTo(sx, floorY);
+      ctx.lineTo(sx, floorY + (isLabel ? 12 : 6));
+      ctx.stroke();
+      if (isLabel) {
+        ctx.fillText(dist === 0 ? '0' : (dist + ' px'), sx, floorY + 26);
+      }
+    }
+    // marca da linha de partida
+    const sxStart = projX(START_X);
+    ctx.strokeStyle = 'rgba(150, 230, 220, 0.55)';
+    ctx.lineWidth = 1.2;
+    ctx.setLineDash([3, 4]);
+    ctx.beginPath();
+    ctx.moveTo(sxStart, floorY - 40);
+    ctx.lineTo(sxStart, floorY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  function drawFlag(floorY) {
+    if (flagX <= START_X) return;
+    const sx = projX(flagX);
+    // mastro
+    ctx.strokeStyle = 'rgba(255, 200, 130, 0.95)';
+    ctx.lineWidth = 1.5;
+    ctx.beginPath();
+    ctx.moveTo(sx, floorY);
+    ctx.lineTo(sx, floorY - 40);
+    ctx.stroke();
+    // tecido da bandeira
+    ctx.fillStyle = 'rgba(255, 200, 130, 0.95)';
+    ctx.beginPath();
+    ctx.moveTo(sx, floorY - 40);
+    ctx.lineTo(sx + 18, floorY - 35);
+    ctx.lineTo(sx, floorY - 28);
+    ctx.closePath();
+    ctx.fill();
+    // distância anotada
+    ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
+    ctx.font = '11px serif';
+    ctx.textAlign = 'center';
+    ctx.fillText(Math.round(flagX - START_X) + ' px', sx, floorY - 46);
   }
 
   function drawOrganism(org, isElite, isLeader) {
@@ -588,14 +642,13 @@
     const dt = Math.min(2, (ts - lastTs) / 16 || 1); // unidades aproximadas
     lastTs = ts;
     if (state === STATE.EVOLVING) {
-      for (let s = 0; s < 1; s++) {
-        for (const org of organisms) step(org, 1);
-      }
-      // câmera segue o LÍDER (o organismo mais à direita)
+      for (const org of organisms) step(org, STEP_DT);
+      // câmera segue o LÍDER (mais à direita) + atualiza recorde da bandeira
       let leaderX = -Infinity;
       for (const o of organisms) {
         const cx = orgCenterX(o);
         if (cx > leaderX) leaderX = cx;
+        if (cx > flagX) flagX = cx;
       }
       if (leaderX > -Infinity) camX = lerp(camX, leaderX, 0.08);
       // auto-boom
