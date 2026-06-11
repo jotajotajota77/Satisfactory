@@ -368,6 +368,16 @@
     const floorY = H - FLOOR_PAD;
     // rede neural calcula a ativação de cada músculo a partir do estado atual
     org.activations = controllerActivations(org, floorY);
+    // físico: sem apoio no chão, músculo não tem alavanca pra aplicar força.
+    // zera a ativação se NENHUMA articulação toca o chão — assim o organismo
+    // não "nada" pelo ar nem muda de direção sem anteparo.
+    let onGround = false;
+    for (const v of org.vertices) {
+      if (v.y >= floorY - 2) { onGround = true; break; }
+    }
+    if (!onGround) {
+      for (let i = 0; i < org.activations.length; i++) org.activations[i] = 0;
+    }
     // integração
     for (const v of org.vertices) {
       const vx = (v.x - v.px) * VELOCITY_DAMPING;
