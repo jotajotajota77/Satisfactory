@@ -704,6 +704,114 @@
       ctx.font = '11px serif';
       ctx.fillText(speedMult.toFixed(1) + '×', W / 2, autoBoom ? 66 : 48);
     }
+    drawBrainPanel();
+  }
+
+  // ---- painel da rede neural do líder (organisms[0] é o elite — vencedor da geração anterior)
+  function drawBrainPanel() {
+    if (!organisms.length) return;
+    const elite = organisms[0];
+    const g = elite.genome;
+    const M = elite.muscles.length;
+    if (M === 0) return;
+
+    // tamanho do painel: encolhe em telas estreitas
+    const isNarrow = W < 600;
+    const panelW = isNarrow ? Math.min(200, W - 32) : 250;
+    const panelH = isNarrow ? 130 : 160;
+    const x0 = W - panelW - 14;
+    const y0 = 14;
+
+    // fundo
+    ctx.fillStyle = 'rgba(8, 14, 20, 0.55)';
+    ctx.strokeStyle = 'rgba(150, 235, 215, 0.20)';
+    ctx.lineWidth = 1;
+    roundRect(x0, y0, panelW, panelH, 10);
+    ctx.fill();
+    ctx.stroke();
+
+    // título
+    ctx.fillStyle = 'rgba(190, 235, 225, 0.65)';
+    ctx.font = '10px serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('cérebro do líder · gen ' + generation, x0 + 12, y0 + 14);
+
+    // layout das camadas
+    const padTop = 24, padBot = 10, padX = 20;
+    const colXs = [x0 + padX, x0 + panelW / 2, x0 + panelW - padX];
+    const colY0 = y0 + padTop;
+    const colH = panelH - padTop - padBot;
+    const layerSizes = [NN_INPUTS, NN_HIDDEN, M];
+    const positions = layerSizes.map((n, c) => {
+      const out = [];
+      for (let i = 0; i < n; i++) {
+        const y = n === 1 ? colY0 + colH / 2 : colY0 + (i / (n - 1)) * colH;
+        out.push({ x: colXs[c], y });
+      }
+      return out;
+    });
+
+    // arestas — teal positivo, rosa negativo; opacidade/grossura pelo |w|
+    function drawEdges(prev, next, W1d, cols, rows) {
+      for (let i = 0; i < cols; i++) {
+        for (let j = 0; j < rows; j++) {
+          const w = W1d[i * rows + j];
+          const mag = Math.min(2.5, Math.abs(w));
+          const a = Math.min(0.85, 0.12 + mag * 0.32);
+          ctx.strokeStyle = w >= 0 ? 'rgba(150, 220, 210, ' + a + ')' : 'rgba(255, 140, 160, ' + a + ')';
+          ctx.lineWidth = Math.max(0.4, mag * 0.6);
+          ctx.beginPath();
+          ctx.moveTo(prev[i].x, prev[i].y);
+          ctx.lineTo(next[j].x, next[j].y);
+          ctx.stroke();
+        }
+      }
+    }
+    drawEdges(positions[0], positions[1], g.W1, NN_INPUTS, NN_HIDDEN);
+    drawEdges(positions[1], positions[2], g.W2, NN_HIDDEN, M);
+
+    // nós
+    for (let c = 0; c < 3; c++) {
+      for (let i = 0; i < layerSizes[c]; i++) {
+        const p = positions[c][i];
+        let fill = 'rgba(180, 230, 220, 0.85)';
+        let r = 3.2;
+        if (c === 2 && elite.activations) {
+          const act = elite.activations[i] || 0;
+          const phase = (act + 1) * 0.5;
+          fill = 'hsla(' + (elite.hue + phase * 40) + ', 78%, ' + (55 + phase * 20) + '%, 0.95)';
+          r = 3.6 + Math.abs(act) * 1.4; // pulsa com a ativação
+        } else if (c === 0) {
+          fill = 'rgba(255, 200, 130, 0.85)'; // entradas: dourado
+        }
+        ctx.fillStyle = fill;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, r, 0, TAU);
+        ctx.fill();
+      }
+    }
+
+    // legenda das entradas (microtexto à esquerda)
+    if (!isNarrow) {
+      const labels = ['sin', 'cos', 'chão', 'alt', 'incl', 'b'];
+      ctx.fillStyle = 'rgba(190, 235, 225, 0.45)';
+      ctx.font = '9px serif';
+      ctx.textAlign = 'right';
+      for (let i = 0; i < Math.min(labels.length, NN_INPUTS); i++) {
+        const p = positions[0][i];
+        ctx.fillText(labels[i], p.x - 6, p.y + 3);
+      }
+    }
+  }
+
+  function roundRect(x, y, w, h, r) {
+    ctx.beginPath();
+    ctx.moveTo(x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
+    ctx.closePath();
   }
 
   function drawRuler(floorY) {
