@@ -34,6 +34,8 @@
   const ITERATIONS = 8;
   const FRICTION_GROUND = 0.42; // 0 = escorregadio, 1 = grudado
   const VERTEX_R = 6;
+  const HIT_R_VERTEX = 26; // raio de tolerância pra "clicar/arrastar até" uma articulação
+  const HIT_R_BONE = 22;   // raio de tolerância pra "clicar/arrastar até" um osso
   const POP_SIZE = 6;
   const FLOOR_PAD = 150; // pixels do chão até a borda inferior (espaço pra régua + controles)
   const STEP_DT = 0.6;   // dt do mundo por quadro real (slower = menos louco)
@@ -53,7 +55,8 @@
   let tBones = [];    // [{a, b}] (índices de articulação)
   let tMuscles = [];  // [{ba, bb}] (índices de ossos)
   let history = [];   // pra desfazer (pilha de ações)
-  let placementMode = 'joint'; // 'joint' | 'bone' | 'muscle'
+  let placementMode = 'joint'; // 'joint' | 'bone' | 'muscle' | 'structure'
+  let tStructIdx = -1; // índice da articulação marcada como "estrutura sensível" (-1 = nenhuma)
 
   // interação com mouse/toque
   let dragStart = null;     // {x, y} ponto inicial do drag
@@ -91,6 +94,7 @@
   const modeJoint = document.getElementById('mode-joint');
   const modeBone = document.getElementById('mode-bone');
   const modeMuscle = document.getElementById('mode-muscle');
+  const structToggle = document.getElementById('struct-toggle');
   const undoBtn = document.getElementById('undo-btn');
   const clearBtn = document.getElementById('clear-btn');
   const startBtn = document.getElementById('start-btn');
@@ -106,10 +110,12 @@
     modeJoint.classList.toggle('on', m === 'joint');
     modeBone.classList.toggle('on', m === 'bone');
     modeMuscle.classList.toggle('on', m === 'muscle');
+    if (structToggle) structToggle.classList.toggle('on', m === 'structure');
   }
   modeJoint.addEventListener('click', () => setMode('joint'));
   modeBone.addEventListener('click', () => setMode('bone'));
   modeMuscle.addEventListener('click', () => setMode('muscle'));
+  if (structToggle) structToggle.addEventListener('click', () => setMode('structure'));
   undoBtn.addEventListener('click', undo);
   clearBtn.addEventListener('click', clearTemplate);
   startBtn.addEventListener('click', start);
@@ -132,12 +138,15 @@
 
   // ---- desenho da criatura
   function vertexNear(x, y) {
+    // toca a mais próxima dentro do raio de tolerância (dedos não miram pixel exato)
+    let best = -1, bestD2 = HIT_R_VERTEX * HIT_R_VERTEX;
     for (let i = tVertices.length - 1; i >= 0; i--) {
       const v = tVertices[i];
       const dx = v.x - x, dy = v.y - y;
-      if (dx * dx + dy * dy < (VERTEX_R + 6) * (VERTEX_R + 6)) return i;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bestD2) { bestD2 = d2; best = i; }
     }
-    return -1;
+    return best;
   }
   function ptSegDist(px, py, x1, y1, x2, y2) {
     const dx = x2 - x1, dy = y2 - y1;
@@ -150,7 +159,7 @@
     return Math.sqrt(ex * ex + ey * ey);
   }
   function boneNear(x, y) {
-    let best = -1, bestD = 12;
+    let best = -1, bestD = HIT_R_BONE;
     for (let i = 0; i < tBones.length; i++) {
       const v1 = tVertices[tBones[i].a], v2 = tVertices[tBones[i].b];
       const d = ptSegDist(x, y, v1.x, v1.y, v2.x, v2.y);
@@ -186,13 +195,17 @@
   function undo() {
     if (state !== STATE.DRAWING || !history.length) return;
     const h = history.pop();
-    if (h.kind === 'v') tVertices.pop();
-    else if (h.kind === 'b') tBones.pop();
+    if (h.kind === 'v') {
+      const removedIdx = tVertices.length - 1;
+      tVertices.pop();
+      if (tStructIdx === removedIdx) tStructIdx = -1;
+    } else if (h.kind === 'b') tBones.pop();
     else if (h.kind === 'm') tMuscles.pop();
   }
   function clearTemplate() {
     if (state !== STATE.DRAWING) return;
     tVertices = []; tBones = []; tMuscles = []; history = [];
+    tStructIdx = -1;
   }
 
   // ---- início da simulação
@@ -290,6 +303,8 @@
       genome,
       activations: new Array(muscles.length).fill(0),
       hue: (idx * 53) % 360,
+      structureIdx: tStructIdx,
+      structPoints: 0, // 1 ponto / segundo / articulação que ficou acima da estrutura
     };
   }
   function cloneGenome(g) {
@@ -374,6 +389,20 @@
         }
       }
     }
+    // pontuação da estrutura sensível: penaliza ter articulações acima dela
+    // (no canvas y cresce pra baixo, então "acima" significa y menor).
+    // dt está em "unidades de quadro"; STEP_DT≈0.6 ≈ 36ms ≈ 0.036s pra
+    // converter aproximadamente em segundos.
+    if (org.structureIdx >= 0 && org.structureIdx < org.vertices.length) {
+      const sv = org.vertices[org.structureIdx];
+      let aboveCount = 0;
+      for (let i = 0; i < org.vertices.length; i++) {
+        if (i === org.structureIdx) continue;
+        if (org.vertices[i].y < sv.y) aboveCount++;
+      }
+      // dt~0.6 por quadro → ~0.6*60≈36 "ticks/s"; divide pra ficar em segundos
+      org.structPoints += aboveCount * (dt / 60);
+    }
   }
   function satisfyDistance(v1, v2, target, k) {
     const dx = v2.x - v1.x;
@@ -411,12 +440,30 @@
   // ---- BOOM (seleção + reprodução com mutação)
   function boom() {
     if (state !== STATE.EVOLVING) return;
-    // melhor = quem foi mais à direita (a partir do startX)
-    let bestIdx = 0, bestDist = -Infinity;
-    for (let i = 0; i < organisms.length; i++) {
-      const d = orgCenterX(organisms[i]) - organisms[i].startX;
-      if (d > bestDist) { bestDist = d; bestIdx = i; }
+    // distância percorrida por cada um (a partir do startX)
+    const dists = organisms.map(o => orgCenterX(o) - o.startX);
+    const usesStructure = tStructIdx >= 0;
+    let bestIdx = 0;
+    if (!usesStructure) {
+      // só distância
+      let bestDist = -Infinity;
+      for (let i = 0; i < organisms.length; i++) {
+        if (dists[i] > bestDist) { bestDist = dists[i]; bestIdx = i; }
+      }
+    } else {
+      // fitness = média entre distância normalizada e inverso da pontuação normalizada
+      const points = organisms.map(o => o.structPoints);
+      const maxDist = Math.max(1, ...dists.map(d => Math.max(0, d)));
+      const maxPts = Math.max(1, ...points);
+      let bestFit = -Infinity;
+      for (let i = 0; i < organisms.length; i++) {
+        const dn = Math.max(0, dists[i]) / maxDist;          // 0..1 (longe = bom)
+        const pn = points[i] / maxPts;                       // 0..1 (alto = ruim)
+        const fit = 0.5 * (dn + (1 - pn));                   // média
+        if (fit > bestFit) { bestFit = fit; bestIdx = i; }
+      }
     }
+    const bestDist = dists[bestIdx];
     const baseGenome = cloneGenome(organisms[bestIdx].genome);
     if (bestDist > bestEverDistance) bestEverDistance = bestDist;
     generation++;
@@ -462,7 +509,7 @@
   function onMove(e) {
     const p = eventXY(e);
     if (state === STATE.DRAWING) {
-      hoverV = vertexNear(p.x, p.y);
+      hoverV = (placementMode !== 'muscle') ? vertexNear(p.x, p.y) : -1;
       hoverB = (placementMode === 'muscle') ? boneNear(p.x, p.y) : -1;
       if (dragStart) dragEnd = { x: p.x, y: p.y };
     }
@@ -480,6 +527,14 @@
       // clique simples (sem arrastar muito) adiciona uma articulação
       if (dragLen < 10) addVertex(px, py);
       else flash('no modo articulação, só clique pra colocar pontos');
+    } else if (placementMode === 'structure') {
+      // clique numa articulação a marca como "estrutura sensível"; clicar nela de novo desmarca
+      if (dragLen < 14) {
+        const vi = vertexNear(px, py);
+        if (vi < 0) flash('clique numa articulação pra marcá-la como estrutura sensível');
+        else if (tStructIdx === vi) tStructIdx = -1;
+        else tStructIdx = vi;
+      }
     } else if (placementMode === 'bone') {
       // arrasta de articulação para articulação
       if (dragStartV < 0) flash('osso precisa começar numa articulação');
@@ -575,9 +630,37 @@
       const v = tVertices[i];
       const isHover = (placementMode !== 'muscle' && i === hoverV);
       const isStart = i === dragStartV;
+      const isStruct = (i === tStructIdx);
       ctx.fillStyle = isStart ? 'rgba(255, 200, 130, 1)' : isHover ? 'rgba(180, 235, 220, 1)' : 'rgba(140, 215, 205, 0.9)';
       ctx.beginPath(); ctx.arc(v.x, v.y, isHover || isStart ? VERTEX_R + 1 : VERTEX_R, 0, TAU); ctx.fill();
+      if (isStruct) drawStructMark(v.x, v.y, 'rgba(255, 200, 130, 0.95)');
     }
+    // dica do modo estrutura
+    if (placementMode === 'structure' && tVertices.length > 0) {
+      ctx.fillStyle = 'rgba(255, 200, 130, 0.7)';
+      ctx.font = '11px serif';
+      ctx.textAlign = 'center';
+      ctx.fillText(
+        tStructIdx < 0
+          ? 'clique numa articulação para marcá-la como estrutura sensível'
+          : 'estrutura escolhida · clique nela de novo para desmarcar',
+        W / 2, floorY - 24
+      );
+    }
+  }
+
+  // pequeno losango ao redor da articulação marcada como estrutura sensível
+  function drawStructMark(x, y, color) {
+    const r = VERTEX_R + 6;
+    ctx.strokeStyle = color;
+    ctx.lineWidth = 1.6;
+    ctx.beginPath();
+    ctx.moveTo(x, y - r);
+    ctx.lineTo(x + r, y);
+    ctx.lineTo(x, y + r);
+    ctx.lineTo(x - r, y);
+    ctx.closePath();
+    ctx.stroke();
   }
 
   function drawOrganisms(floorY) {
@@ -598,7 +681,14 @@
     ctx.fillStyle = 'rgba(190, 235, 225, 0.85)';
     ctx.font = '13px serif';
     ctx.textAlign = 'center';
-    ctx.fillText('geração ' + generation + ' · líder ' + Math.round(leaderDist) + ' px', W / 2, 28);
+    let hud = 'geração ' + generation + ' · líder ' + Math.round(leaderDist) + ' px';
+    if (organisms.length && organisms[0].structureIdx >= 0) {
+      // mostra a menor pontuação da estrutura (melhor) entre os organismos
+      let minPts = Infinity;
+      for (const o of organisms) if (o.structPoints < minPts) minPts = o.structPoints;
+      hud += ' · est. sens. min ' + minPts.toFixed(1);
+    }
+    ctx.fillText(hud, W / 2, 28);
     if (autoBoom) {
       const remaining = Math.max(0, Math.round((autoBoomNext - performance.now()) / 1000));
       ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
@@ -706,6 +796,12 @@
       ctx.beginPath();
       ctx.arc(projX(v.x), projY(v.y), isElite ? 4 : 3, 0, TAU);
       ctx.fill();
+    }
+    // marca da estrutura sensível
+    if (org.structureIdx >= 0 && org.structureIdx < org.vertices.length) {
+      const sv = org.vertices[org.structureIdx];
+      const a = isElite ? 0.95 : isLeader ? 0.85 : 0.55;
+      drawStructMark(projX(sv.x), projY(sv.y), 'rgba(255, 200, 130, ' + a + ')');
     }
   }
 
