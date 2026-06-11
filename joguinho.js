@@ -72,10 +72,14 @@
   let bestEverDistance = 0;
   let flagX = START_X; // posição X (mundo) da bandeira: o mais longe já alcançado nesta sessão
 
-  // auto-boom
+  // auto-boom: o tempo restante é em "ms de simulação", ou seja, anda mais
+  // rápido quando o slider de velocidade está alto (assim quem acelera a
+  // simulação também acelera o relógio do boom).
   let autoBoom = false;
-  let autoBoomNext = 0;
-  let autoBoomLastShown = 0;
+  let autoBoomRemaining = 0;
+  function autoBoomReset() {
+    autoBoomRemaining = (+autoSecs.value || 12) * 1000;
+  }
 
   // velocidade da simulação (slider 0.1×–10×) com acumulador fracionário
   let speedMult = 1;
@@ -133,7 +137,7 @@
     autoBoom = !!on;
     autoToggle.classList.toggle('on', autoBoom);
     autoToggle.textContent = autoBoom ? 'auto on' : 'auto';
-    if (autoBoom) autoBoomNext = performance.now() + (+autoSecs.value || 12) * 1000;
+    if (autoBoom) autoBoomReset();
   }
 
   // ---- desenho da criatura
@@ -224,7 +228,7 @@
     camX = START_X;
     organisms = [];
     for (let i = 0; i < POP_SIZE; i++) organisms.push(makeOrganism(randomGenome(), i));
-    if (autoBoom) autoBoomNext = performance.now() + (+autoSecs.value || 12) * 1000;
+    if (autoBoom) autoBoomReset();
   }
 
   function backToDrawing() {
@@ -475,7 +479,7 @@
       organisms.push(makeOrganism(mutateGenome(baseGenome, strength), i));
     }
     camX = START_X;
-    if (autoBoom) autoBoomNext = performance.now() + (+autoSecs.value || 12) * 1000;
+    if (autoBoom) autoBoomReset();
   }
 
   // ---- input
@@ -690,9 +694,10 @@
     }
     ctx.fillText(hud, W / 2, 28);
     if (autoBoom) {
-      const remaining = Math.max(0, Math.round((autoBoomNext - performance.now()) / 1000));
+      // mostra os segundos reais que faltam (já compensa a velocidade)
+      const realRemaining = Math.max(0, Math.round(autoBoomRemaining / Math.max(0.01, speedMult) / 1000));
       ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
-      ctx.fillText('próximo boom em ' + remaining + 's', W / 2, 48);
+      ctx.fillText('próximo boom em ' + realRemaining + 's', W / 2, 48);
     }
     if (Math.abs(speedMult - 1) > 0.05) {
       ctx.fillStyle = speedMult > 1 ? 'rgba(255, 200, 130, 0.85)' : 'rgba(150, 230, 220, 0.7)';
@@ -834,8 +839,11 @@
         if (cx > flagX) flagX = cx;
       }
       if (leaderX > -Infinity) camX = lerp(camX, leaderX, 0.08);
-      // auto-boom
-      if (autoBoom && performance.now() >= autoBoomNext) boom();
+      // auto-boom: relógio anda em "ms de simulação" (acompanha a velocidade)
+      if (autoBoom) {
+        autoBoomRemaining -= dt * 16 * speedMult;
+        if (autoBoomRemaining <= 0) boom();
+      }
     }
     render();
     // flash
