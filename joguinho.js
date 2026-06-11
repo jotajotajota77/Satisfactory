@@ -732,9 +732,9 @@
     const x0 = W - panelW - 14;
     const y0 = 14;
 
-    // fundo
-    ctx.fillStyle = 'rgba(8, 14, 20, 0.55)';
-    ctx.strokeStyle = 'rgba(150, 235, 215, 0.20)';
+    // fundo (mais opaco pra contrastar com o canvas quase preto)
+    ctx.fillStyle = 'rgba(16, 26, 36, 0.92)';
+    ctx.strokeStyle = 'rgba(150, 235, 215, 0.45)';
     ctx.lineWidth = 1;
     roundRect(x0, y0, panelW, panelH, 10);
     ctx.fill();
