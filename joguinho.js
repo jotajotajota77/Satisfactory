@@ -75,8 +75,9 @@
   let generation = 0;
   let bestEverDistance = 0;
   let flagX = START_X; // posição X (mundo) da bandeira: o mais longe já alcançado nesta sessão
-  let lastGenDistances = []; // distâncias da geração anterior (alimenta o histograma)
+  let lastGenDistances = []; // distâncias da geração anterior (histograma de cima)
   let lastGenNumber = 0;     // número da geração cujas distâncias estão em lastGenDistances
+  let allGenDistances = [];  // todas as distâncias acumuladas (histograma de baixo)
 
   // auto-boom: o tempo restante é em "ms de simulação", ou seja, anda mais
   // rápido quando o slider de velocidade está alto (assim quem acelera a
@@ -252,6 +253,7 @@
     camX = START_X;
     organisms = [];
     lastGenDistances = []; lastGenNumber = 0;
+    allGenDistances = [];
     for (let i = 0; i < POP_SIZE; i++) organisms.push(makeOrganism(randomGenome(), i));
     if (autoBoom) autoBoomReset();
   }
@@ -493,6 +495,8 @@
     // guarda as distâncias dessa geração pro histograma da próxima
     lastGenDistances = dists.slice();
     lastGenNumber = generation;
+    // acumula no histograma global de todas as gerações
+    for (const d of dists) allGenDistances.push(d);
     const usesStructure = tStructIdx >= 0;
     let bestIdx = 0;
     if (!usesStructure) {
@@ -751,19 +755,35 @@
       ctx.font = '11px serif';
       ctx.fillText(speedMult.toFixed(1) + '×', W / 2, autoBoom ? 66 : 48);
     }
-    drawHistogram();
+    drawHistograms();
   }
 
-  // ---- histograma da distância da geração anterior (10 classes)
-  function drawHistogram() {
-    if (!lastGenDistances.length) return;
-    const BINS = 10;
-
+  // ---- histogramas: o de cima é só a geração anterior, o de baixo acumula tudo
+  function drawHistograms() {
     const isNarrow = W < 600;
     const panelW = isNarrow ? Math.min(220, W - 32) : 280;
-    const panelH = isNarrow ? 130 : 160;
+    const panelH = isNarrow ? 120 : 150;
     const x0 = W - panelW - 14;
-    const y0 = 14;
+    const gap = 8;
+
+    if (lastGenDistances.length) {
+      drawHistogramPanel(
+        lastGenDistances,
+        'geração ' + lastGenNumber + ' · ' + lastGenDistances.length + ' ind.',
+        x0, 14, panelW, panelH
+      );
+    }
+    if (allGenDistances.length) {
+      drawHistogramPanel(
+        allGenDistances,
+        'acumulado · ' + allGenDistances.length + ' ind.',
+        x0, 14 + panelH + gap, panelW, panelH
+      );
+    }
+  }
+
+  function drawHistogramPanel(data, title, x0, y0, panelW, panelH) {
+    const BINS = 10;
 
     // fundo
     ctx.fillStyle = 'rgba(16, 26, 36, 0.92)';
@@ -777,17 +797,14 @@
     ctx.fillStyle = 'rgba(190, 235, 225, 0.7)';
     ctx.font = '10px serif';
     ctx.textAlign = 'left';
-    ctx.fillText(
-      'distância · gen ' + lastGenNumber + ' · ' + lastGenDistances.length + ' indivíduos',
-      x0 + 12, y0 + 14
-    );
+    ctx.fillText(title, x0 + 12, y0 + 14);
 
-    // bins
+    // bins (min/max/intervalo recalculados a partir dos próprios dados)
     let minD = Infinity, maxD = -Infinity;
-    for (const d of lastGenDistances) { if (d < minD) minD = d; if (d > maxD) maxD = d; }
+    for (const d of data) { if (d < minD) minD = d; if (d > maxD) maxD = d; }
     const range = Math.max(1, maxD - minD);
     const bins = new Array(BINS).fill(0);
-    for (const d of lastGenDistances) {
+    for (const d of data) {
       let b = Math.floor((d - minD) / range * BINS);
       if (b >= BINS) b = BINS - 1;
       if (b < 0) b = 0;
@@ -798,7 +815,7 @@
     if (maxCount === 0) maxCount = 1;
 
     // layout da área do gráfico
-    const padTop = 26, padBot = 26, padLeft = 14, padRight = 14;
+    const padTop = 24, padBot = 22, padLeft = 14, padRight = 14;
     const chartX = x0 + padLeft;
     const chartY = y0 + padTop;
     const chartW = panelW - padLeft - padRight;
@@ -813,17 +830,15 @@
     ctx.lineTo(chartX + chartW, chartY + chartH + 0.5);
     ctx.stroke();
 
-    // barras: do menor (rosa) ao maior (dourado/teal) — quem foi mais longe
+    // barras: do menor (rosa) ao maior (teal)
     for (let i = 0; i < BINS; i++) {
       const h = (bins[i] / maxCount) * chartH;
       const bx = chartX + i * barW;
       const by = chartY + chartH - h;
       const t = i / Math.max(1, BINS - 1);
-      // interpolação rosa → teal: tons que já existem na cena
       const hue = lerp(340, 170, t);
       ctx.fillStyle = 'hsla(' + hue + ', 65%, 60%, 0.85)';
       ctx.fillRect(bx + 1, by, Math.max(1, barW - 2), h);
-      // contagem em cima da barra (só se couber)
       if (bins[i] > 0 && barW > 14) {
         ctx.fillStyle = 'rgba(190, 235, 225, 0.55)';
         ctx.font = '9px serif';
