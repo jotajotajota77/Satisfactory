@@ -34,6 +34,9 @@
   const ITERATIONS = 8;
   const FRICTION_GROUND_DEFAULT = 0.42; // 0 = escorregadio, 1 = grudado
   let frictionGround = FRICTION_GROUND_DEFAULT; // ajustável via slider em tempo real
+  // tempo mínimo (em segundos) pra um músculo ir de -1 a +1 (ou vice-versa).
+  // limita a velocidade de contração/relaxamento — quanto maior, mais lento o ciclo.
+  let minCycleSec = 0.5;
   const VERTEX_R = 6;
   const HIT_R_VERTEX = 26; // raio de tolerância pra "clicar/arrastar até" uma articulação
   const HIT_R_BONE = 22;   // raio de tolerância pra "clicar/arrastar até" um osso
@@ -113,6 +116,8 @@
   const speedLabel = document.getElementById('speed-label');
   const frictionSlider = document.getElementById('friction-slider');
   const frictionLabel = document.getElementById('friction-label');
+  const cycleSlider = document.getElementById('cycle-slider');
+  const cycleLabel = document.getElementById('cycle-label');
 
   function setMode(m) {
     placementMode = m;
@@ -144,6 +149,13 @@
     if (frictionLabel) frictionLabel.textContent = frictionGround.toFixed(2);
   }
   if (frictionSlider) frictionSlider.addEventListener('input', () => setFriction(frictionSlider.value));
+  function setCycle(v) {
+    minCycleSec = clamp(+v, 0.05, 3);
+    if (Number.isNaN(minCycleSec)) minCycleSec = 0.5;
+    if (cycleSlider) cycleSlider.value = String(minCycleSec);
+    if (cycleLabel) cycleLabel.textContent = minCycleSec.toFixed(2) + 's';
+  }
+  if (cycleSlider) cycleSlider.addEventListener('input', () => setCycle(cycleSlider.value));
 
   function setAutoBoom(on) {
     autoBoom = !!on;
@@ -318,7 +330,8 @@
       vertices, bones, muscles,
       time: 0, startX,
       genome,
-      activations: new Array(muscles.length).fill(0),
+      activations: new Array(muscles.length).fill(0),       // versão suavizada (rate-limited) usada na física
+      rawActivations: new Array(muscles.length).fill(0),    // saída crua da rede
       hue: (idx * 53) % 360,
       structureIdx: tStructIdx,
       structPoints: 0, // 1 ponto / segundo / articulação que ficou acima da estrutura
@@ -379,8 +392,8 @@
   function step(org, dt) {
     org.time += dt;
     const floorY = H - FLOOR_PAD;
-    // rede neural calcula a ativação de cada músculo a partir do estado atual
-    org.activations = controllerActivations(org, floorY);
+    // rede neural calcula a ativação CRUA de cada músculo a partir do estado atual
+    org.rawActivations = controllerActivations(org, floorY);
     // físico: sem apoio no chão, músculo não tem alavanca pra aplicar força.
     // zera a ativação se NENHUMA articulação toca o chão — assim o organismo
     // não "nada" pelo ar nem muda de direção sem anteparo.
@@ -389,7 +402,15 @@
       if (v.y >= floorY - 2) { onGround = true; break; }
     }
     if (!onGround) {
-      for (let i = 0; i < org.activations.length; i++) org.activations[i] = 0;
+      for (let i = 0; i < org.rawActivations.length; i++) org.rawActivations[i] = 0;
+    }
+    // limita a velocidade de contração/relaxamento: ir de -1 a +1 leva no mínimo
+    // minCycleSec segundos. dt/60 ≈ segundos por passo.
+    const maxDelta = (2 / Math.max(0.05, minCycleSec)) * (dt / 60);
+    for (let i = 0; i < org.rawActivations.length; i++) {
+      const diff = org.rawActivations[i] - org.activations[i];
+      const change = diff > maxDelta ? maxDelta : (diff < -maxDelta ? -maxDelta : diff);
+      org.activations[i] += change;
     }
     // integração
     for (const v of org.vertices) {
