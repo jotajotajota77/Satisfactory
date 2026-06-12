@@ -6,7 +6,7 @@
   "start_url": ".",
   "scope": ".",
   "display": "standalone",
-  "orientation": "any",
+  "orientation": "portrait",
   "background_color": "#05060a",
   "theme_color": "#05060a",
   "categories": ["entertainment", "lifestyle", "art"],
