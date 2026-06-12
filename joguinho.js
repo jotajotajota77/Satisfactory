@@ -84,6 +84,9 @@
   // simulação também acelera o relógio do boom).
   let autoBoom = false;
   let autoBoomRemaining = 0;
+  // se ligado, criaturas que acumularam ≥ 360° de rotação são desclassificadas
+  // do BOOM. se nenhuma sobrar, nova ninhada aleatória.
+  let punishSpin = false;
   function autoBoomReset() {
     autoBoomRemaining = (+autoSecs.value || 12) * 1000;
   }
@@ -119,6 +122,7 @@
   const frictionLabel = document.getElementById('friction-label');
   const cycleSlider = document.getElementById('cycle-slider');
   const cycleLabel = document.getElementById('cycle-label');
+  const punishSpinBtn = document.getElementById('punish-spin-btn');
 
   function setMode(m) {
     placementMode = m;
@@ -157,6 +161,14 @@
     if (cycleLabel) cycleLabel.textContent = minCycleSec.toFixed(2) + 's';
   }
   if (cycleSlider) cycleSlider.addEventListener('input', () => setCycle(cycleSlider.value));
+  function setPunishSpin(on) {
+    punishSpin = !!on;
+    if (punishSpinBtn) {
+      punishSpinBtn.classList.toggle('on', punishSpin);
+      punishSpinBtn.textContent = punishSpin ? 'sem giro' : 'punir giro';
+    }
+  }
+  if (punishSpinBtn) punishSpinBtn.addEventListener('click', () => setPunishSpin(!punishSpin));
 
   function setAutoBoom(on) {
     autoBoom = !!on;
@@ -336,7 +348,9 @@
       rawActivations: new Array(muscles.length).fill(0),    // saída crua da rede
       hue: (idx * 53) % 360,
       structureIdx: tStructIdx,
-      structPoints: 0, // 1 ponto / segundo / articulação que ficou acima da estrutura
+      structPoints: 0,    // 1 ponto / segundo / articulação que ficou acima da estrutura
+      totalRotation: 0,   // soma do delta de ângulo do primeiro osso (rad). |≥2π| = giro de 360°
+      lastBoneAngle: null,
     };
   }
   function cloneGenome(g) {
@@ -453,6 +467,20 @@
       // dt~0.6 por quadro → ~0.6*60≈36 "ticks/s"; divide pra ficar em segundos
       org.structPoints += aboveCount * (dt / 60);
     }
+    // rotação acumulada: ângulo do primeiro osso, "desenrolado" frame a frame.
+    // |totalRotation| ≥ 2π = girou pelo menos 360°.
+    if (org.bones.length > 0) {
+      const b = org.bones[0];
+      const va = org.vertices[b.a], vb = org.vertices[b.b];
+      const angle = Math.atan2(vb.y - va.y, vb.x - va.x);
+      if (org.lastBoneAngle !== null) {
+        let delta = angle - org.lastBoneAngle;
+        if (delta > Math.PI) delta -= TAU;
+        else if (delta < -Math.PI) delta += TAU;
+        org.totalRotation += delta;
+      }
+      org.lastBoneAngle = angle;
+    }
   }
   function satisfyDistance(v1, v2, target, k) {
     const dx = v2.x - v1.x;
@@ -497,31 +525,52 @@
     lastGenNumber = generation;
     // acumula no histograma global de todas as gerações
     for (const d of dists) allGenDistances.push(d);
-    const usesStructure = tStructIdx >= 0;
-    let bestIdx = 0;
-    if (!usesStructure) {
-      // só distância
-      let bestDist = -Infinity;
+    // elegibilidade: "punir giro" exclui quem rotacionou ≥ 360° (2π rad)
+    const eligible = [];
+    if (punishSpin) {
       for (let i = 0; i < organisms.length; i++) {
+        if (Math.abs(organisms[i].totalRotation) < TAU) eligible.push(i);
+      }
+    } else {
+      for (let i = 0; i < organisms.length; i++) eligible.push(i);
+    }
+    generation++;
+    // se nenhuma criatura passou no filtro, gera ninhada toda aleatória
+    if (eligible.length === 0) {
+      organisms = [];
+      for (let i = 0; i < POP_SIZE; i++) organisms.push(makeOrganism(randomGenome(), i));
+      camX = START_X;
+      if (autoBoom) autoBoomReset();
+      flash('todas giraram 360° — nova ninhada aleatória', 2200);
+      return;
+    }
+    // seleciona o melhor entre os elegíveis
+    const usesStructure = tStructIdx >= 0;
+    let bestIdx = eligible[0];
+    if (!usesStructure) {
+      let bestDist = -Infinity;
+      for (const i of eligible) {
         if (dists[i] > bestDist) { bestDist = dists[i]; bestIdx = i; }
       }
     } else {
-      // fitness = média entre distância normalizada e inverso da pontuação normalizada
       const points = organisms.map(o => o.structPoints);
-      const maxDist = Math.max(1, ...dists.map(d => Math.max(0, d)));
-      const maxPts = Math.max(1, ...points);
+      let maxDist = 1, maxPts = 1;
+      for (const i of eligible) {
+        const dp = Math.max(0, dists[i]);
+        if (dp > maxDist) maxDist = dp;
+        if (points[i] > maxPts) maxPts = points[i];
+      }
       let bestFit = -Infinity;
-      for (let i = 0; i < organisms.length; i++) {
-        const dn = Math.max(0, dists[i]) / maxDist;          // 0..1 (longe = bom)
-        const pn = points[i] / maxPts;                       // 0..1 (alto = ruim)
-        const fit = 0.5 * (dn + (1 - pn));                   // média
+      for (const i of eligible) {
+        const dn = Math.max(0, dists[i]) / maxDist;
+        const pn = points[i] / maxPts;
+        const fit = 0.5 * (dn + (1 - pn));
         if (fit > bestFit) { bestFit = fit; bestIdx = i; }
       }
     }
     const bestDist = dists[bestIdx];
     const baseGenome = cloneGenome(organisms[bestIdx].genome);
     if (bestDist > bestEverDistance) bestEverDistance = bestDist;
-    generation++;
     // nova geração: 1 elite + (POP_SIZE-1) mutações
     organisms = [];
     organisms.push(makeOrganism(baseGenome, 0)); // elite (sem mutação)
