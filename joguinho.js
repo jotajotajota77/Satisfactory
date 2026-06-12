@@ -75,6 +75,7 @@
   let generation = 0;
   let bestEverDistance = 0;
   let flagX = START_X; // posição X (mundo) da bandeira: o mais longe já alcançado nesta sessão
+  let flagH = 0;       // altura máxima já atingida (px acima do chão) — bandeira do modo "pular"
   let lastGenDistances = []; // distâncias da geração anterior (histograma de cima)
   let lastGenNumber = 0;     // número da geração cujas distâncias estão em lastGenDistances
   let allGenDistances = [];  // todas as distâncias acumuladas (histograma de baixo)
@@ -87,6 +88,8 @@
   // se ligado, criaturas que acumularam ≥ 360° de rotação são desclassificadas
   // do BOOM. se nenhuma sobrar, nova ninhada aleatória.
   let punishSpin = false;
+  // objetivo da evolução: 'run' (distância horizontal) ou 'jump' (altura máxima)
+  let evolMode = 'run';
   function autoBoomReset() {
     autoBoomRemaining = (+autoSecs.value || 12) * 1000;
   }
@@ -123,6 +126,7 @@
   const cycleSlider = document.getElementById('cycle-slider');
   const cycleLabel = document.getElementById('cycle-label');
   const punishSpinBtn = document.getElementById('punish-spin-btn');
+  const modeEvolBtn = document.getElementById('mode-evol-btn');
 
   function setMode(m) {
     placementMode = m;
@@ -169,6 +173,14 @@
     }
   }
   if (punishSpinBtn) punishSpinBtn.addEventListener('click', () => setPunishSpin(!punishSpin));
+  function setEvolMode(m) {
+    evolMode = m === 'jump' ? 'jump' : 'run';
+    if (modeEvolBtn) {
+      modeEvolBtn.textContent = 'modo: ' + (evolMode === 'jump' ? 'pular' : 'correr');
+      modeEvolBtn.classList.toggle('on', evolMode === 'jump');
+    }
+  }
+  if (modeEvolBtn) modeEvolBtn.addEventListener('click', () => setEvolMode(evolMode === 'jump' ? 'run' : 'jump'));
 
   function setAutoBoom(on) {
     autoBoom = !!on;
@@ -262,6 +274,7 @@
     generation = 1;
     bestEverDistance = 0;
     flagX = START_X; // bandeira começa na linha de partida
+    flagH = 0;
     camX = START_X;
     organisms = [];
     lastGenDistances = []; lastGenNumber = 0;
@@ -351,7 +364,12 @@
       structPoints: 0,    // 1 ponto / segundo / articulação que ficou acima da estrutura
       totalRotation: 0,   // soma do delta de ângulo do primeiro osso (rad). |≥2π| = giro de 360°
       lastBoneAngle: null,
+      maxHeight: 0,       // maior altura (em px acima do chão) já atingida por qualquer articulação
     };
+  }
+  // métrica de fitness conforme o modo: distância horizontal (correr) ou altura máxima (pular)
+  function orgMetric(org) {
+    return evolMode === 'jump' ? org.maxHeight : (orgCenterX(org) - org.startX);
   }
   function cloneGenome(g) {
     return {
@@ -481,6 +499,11 @@
       }
       org.lastBoneAngle = angle;
     }
+    // altura máxima já atingida (em px acima do chão) — alimenta o modo "pular"
+    let minY = Infinity;
+    for (const v of org.vertices) if (v.y < minY) minY = v.y;
+    const h = floorY - minY;
+    if (h > org.maxHeight) org.maxHeight = h;
   }
   function satisfyDistance(v1, v2, target, k) {
     const dx = v2.x - v1.x;
@@ -518,13 +541,13 @@
   // ---- BOOM (seleção + reprodução com mutação)
   function boom() {
     if (state !== STATE.EVOLVING) return;
-    // distância percorrida por cada um (a partir do startX)
-    const dists = organisms.map(o => orgCenterX(o) - o.startX);
-    // guarda as distâncias dessa geração pro histograma da próxima
-    lastGenDistances = dists.slice();
+    // métrica de cada um conforme o modo (distância ou altura máxima)
+    const metrics = organisms.map(orgMetric);
+    // guarda as métricas dessa geração pro histograma da próxima
+    lastGenDistances = metrics.slice();
     lastGenNumber = generation;
     // acumula no histograma global de todas as gerações
-    for (const d of dists) allGenDistances.push(d);
+    for (const d of metrics) allGenDistances.push(d);
     // elegibilidade: "punir giro" exclui quem rotacionou ≥ 360° (2π rad)
     const eligible = [];
     if (punishSpin) {
@@ -548,29 +571,29 @@
     const usesStructure = tStructIdx >= 0;
     let bestIdx = eligible[0];
     if (!usesStructure) {
-      let bestDist = -Infinity;
+      let bestM = -Infinity;
       for (const i of eligible) {
-        if (dists[i] > bestDist) { bestDist = dists[i]; bestIdx = i; }
+        if (metrics[i] > bestM) { bestM = metrics[i]; bestIdx = i; }
       }
     } else {
       const points = organisms.map(o => o.structPoints);
-      let maxDist = 1, maxPts = 1;
+      let maxM = 1, maxPts = 1;
       for (const i of eligible) {
-        const dp = Math.max(0, dists[i]);
-        if (dp > maxDist) maxDist = dp;
+        const mp = Math.max(0, metrics[i]);
+        if (mp > maxM) maxM = mp;
         if (points[i] > maxPts) maxPts = points[i];
       }
       let bestFit = -Infinity;
       for (const i of eligible) {
-        const dn = Math.max(0, dists[i]) / maxDist;
+        const mn = Math.max(0, metrics[i]) / maxM;
         const pn = points[i] / maxPts;
-        const fit = 0.5 * (dn + (1 - pn));
+        const fit = 0.5 * (mn + (1 - pn));
         if (fit > bestFit) { bestFit = fit; bestIdx = i; }
       }
     }
-    const bestDist = dists[bestIdx];
+    const bestM = metrics[bestIdx];
     const baseGenome = cloneGenome(organisms[bestIdx].genome);
-    if (bestDist > bestEverDistance) bestEverDistance = bestDist;
+    if (bestM > bestEverDistance) bestEverDistance = bestM;
     // nova geração: 1 elite + (POP_SIZE-1) mutações
     organisms = [];
     organisms.push(makeOrganism(baseGenome, 0)); // elite (sem mutação)
@@ -768,24 +791,25 @@
   }
 
   function drawOrganisms(floorY) {
-    // descobre o melhor atual (mais à direita)
-    let leaderDist = -Infinity;
+    // melhor atual conforme a métrica do modo (correr = distância; pular = altura)
+    let leaderM = -Infinity;
     for (const o of organisms) {
-      const d = orgCenterX(o) - o.startX;
-      if (d > leaderDist) leaderDist = d;
+      const m = orgMetric(o);
+      if (m > leaderM) leaderM = m;
     }
     // organismo elite (i=0) é o pai da geração; destacar
     for (let i = 0; i < organisms.length; i++) {
       const org = organisms[i];
       const isElite = i === 0;
-      const isLeader = (orgCenterX(org) - org.startX) === leaderDist;
+      const isLeader = orgMetric(org) === leaderM;
       drawOrganism(org, isElite, isLeader);
     }
     // HUD (centro superior pra não brigar com o link "← ecossistema" e a bandeira)
     ctx.fillStyle = 'rgba(190, 235, 225, 0.85)';
     ctx.font = '13px serif';
     ctx.textAlign = 'center';
-    let hud = 'geração ' + generation + ' · líder ' + Math.round(leaderDist) + ' px';
+    const metricName = evolMode === 'jump' ? 'altura' : 'dist';
+    let hud = 'geração ' + generation + ' · ' + metricName + ' líder ' + Math.round(leaderM) + ' px';
     if (organisms.length && organisms[0].structureIdx >= 0) {
       // mostra a menor pontuação da estrutura (melhor) entre os organismos
       let minPts = Infinity;
@@ -951,16 +975,33 @@
   }
 
   function drawFlag(floorY) {
+    if (evolMode === 'jump') {
+      // linha horizontal marcando o recorde de altura desta sessão
+      if (flagH <= 0) return;
+      const sy = projY(floorY - flagH);
+      ctx.strokeStyle = 'rgba(255, 200, 130, 0.7)';
+      ctx.lineWidth = 1.2;
+      ctx.setLineDash([6, 6]);
+      ctx.beginPath();
+      ctx.moveTo(0, sy);
+      ctx.lineTo(W, sy);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
+      ctx.font = '11px serif';
+      ctx.textAlign = 'left';
+      ctx.fillText(Math.round(flagH) + ' px', 12, sy - 4);
+      return;
+    }
+    // modo correr: mastro vertical com bandeira na posição máxima
     if (flagX <= START_X) return;
     const sx = projX(flagX);
-    // mastro
     ctx.strokeStyle = 'rgba(255, 200, 130, 0.95)';
     ctx.lineWidth = 1.5;
     ctx.beginPath();
     ctx.moveTo(sx, floorY);
     ctx.lineTo(sx, floorY - 40);
     ctx.stroke();
-    // tecido da bandeira
     ctx.fillStyle = 'rgba(255, 200, 130, 0.95)';
     ctx.beginPath();
     ctx.moveTo(sx, floorY - 40);
@@ -968,7 +1009,6 @@
     ctx.lineTo(sx, floorY - 28);
     ctx.closePath();
     ctx.fill();
-    // distância anotada
     ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
     ctx.font = '11px serif';
     ctx.textAlign = 'center';
@@ -1040,14 +1080,23 @@
         for (const org of organisms) step(org, STEP_DT);
         stepAccum -= 1;
       }
-      // câmera segue o LÍDER (mais à direita) + atualiza recorde da bandeira
-      let leaderX = -Infinity;
-      for (const o of organisms) {
-        const cx = orgCenterX(o);
-        if (cx > leaderX) leaderX = cx;
-        if (cx > flagX) flagX = cx;
+      // câmera + bandeira: no modo correr segue quem foi mais à direita;
+      // no modo pular fica parada na partida (horizontal é irrelevante) e
+      // a bandeira vira a maior altura já atingida.
+      if (evolMode === 'run') {
+        let leaderX = -Infinity;
+        for (const o of organisms) {
+          const cx = orgCenterX(o);
+          if (cx > leaderX) leaderX = cx;
+          if (cx > flagX) flagX = cx;
+        }
+        if (leaderX > -Infinity) camX = lerp(camX, leaderX, 0.08);
+      } else {
+        for (const o of organisms) {
+          if (o.maxHeight > flagH) flagH = o.maxHeight;
+        }
+        camX = lerp(camX, START_X, 0.08);
       }
-      if (leaderX > -Infinity) camX = lerp(camX, leaderX, 0.08);
       // auto-boom: relógio anda em "ms de simulação" (acompanha a velocidade)
       if (autoBoom) {
         autoBoomRemaining -= dt * 16 * speedMult;
