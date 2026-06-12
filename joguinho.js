@@ -32,7 +32,8 @@
   const GRAVITY = 0.45;
   const VELOCITY_DAMPING = 0.985;
   const ITERATIONS = 8;
-  const FRICTION_GROUND = 0.42; // 0 = escorregadio, 1 = grudado
+  const FRICTION_GROUND_DEFAULT = 0.42; // 0 = escorregadio, 1 = grudado
+  let frictionGround = FRICTION_GROUND_DEFAULT; // ajustável via slider em tempo real
   const VERTEX_R = 6;
   const HIT_R_VERTEX = 26; // raio de tolerância pra "clicar/arrastar até" uma articulação
   const HIT_R_BONE = 22;   // raio de tolerância pra "clicar/arrastar até" um osso
@@ -108,6 +109,8 @@
   const backBtn = document.getElementById('back-btn');
   const speedSlider = document.getElementById('speed-slider');
   const speedLabel = document.getElementById('speed-label');
+  const frictionSlider = document.getElementById('friction-slider');
+  const frictionLabel = document.getElementById('friction-label');
 
   function setMode(m) {
     placementMode = m;
@@ -132,6 +135,13 @@
     if (speedLabel) speedLabel.textContent = speedMult.toFixed(1) + '×';
   }
   if (speedSlider) speedSlider.addEventListener('input', () => setSpeed(speedSlider.value));
+  function setFriction(v) {
+    frictionGround = clamp(+v, 0, 1);
+    if (Number.isNaN(frictionGround)) frictionGround = FRICTION_GROUND_DEFAULT;
+    if (frictionSlider) frictionSlider.value = String(frictionGround);
+    if (frictionLabel) frictionLabel.textContent = frictionGround.toFixed(2);
+  }
+  if (frictionSlider) frictionSlider.addEventListener('input', () => setFriction(frictionSlider.value));
 
   function setAutoBoom(on) {
     autoBoom = !!on;
@@ -399,7 +409,7 @@
       for (const v of org.vertices) {
         if (v.y > floorY) {
           v.y = floorY;
-          v.px += (v.x - v.px) * FRICTION_GROUND;
+          v.px += (v.x - v.px) * frictionGround;
         }
       }
     }
