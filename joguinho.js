@@ -362,8 +362,8 @@
       hue: (idx * 53) % 360,
       structureIdx: tStructIdx,
       structPoints: 0,    // 1 ponto / segundo / articulação que ficou acima da estrutura
-      totalRotation: 0,   // soma do delta de ângulo do primeiro osso (rad). |≥2π| = giro de 360°
-      lastBoneAngle: null,
+      totalRotation: 0,   // rotação acumulada do corpo todo (rad)
+      peakRotation: 0,    // maior |totalRotation| já atingido — pega quem gira 360° e volta
       maxHeight: 0,       // maior altura (em px acima do chão) já atingida por qualquer articulação
     };
   }
@@ -485,19 +485,26 @@
       // dt~0.6 por quadro → ~0.6*60≈36 "ticks/s"; divide pra ficar em segundos
       org.structPoints += aboveCount * (dt / 60);
     }
-    // rotação acumulada: ângulo do primeiro osso, "desenrolado" frame a frame.
-    // |totalRotation| ≥ 2π = girou pelo menos 360°.
-    if (org.bones.length > 0) {
-      const b = org.bones[0];
-      const va = org.vertices[b.a], vb = org.vertices[b.b];
-      const angle = Math.atan2(vb.y - va.y, vb.x - va.x);
-      if (org.lastBoneAngle !== null) {
-        let delta = angle - org.lastBoneAngle;
-        if (delta > Math.PI) delta -= TAU;
-        else if (delta < -Math.PI) delta += TAU;
-        org.totalRotation += delta;
+    // rotação acumulada: velocidade angular do corpo inteiro (corpo rígido idealizado)
+    //   ω = Σ(r × v) / Σ(r²), onde r é a posição relativa ao centróide e v é a
+    // velocidade do vértice. integra frame a frame. captura rotação de cambalhota
+    // do corpo todo, mesmo quando articulações individuais oscilam sem girar.
+    {
+      let cx = 0, cy = 0;
+      for (const v of org.vertices) { cx += v.x; cy += v.y; }
+      cx /= org.vertices.length; cy /= org.vertices.length;
+      let cross = 0, rSq = 0;
+      for (const v of org.vertices) {
+        const rx = v.x - cx, ry = v.y - cy;
+        const vx = v.x - v.px, vy = v.y - v.py;
+        cross += rx * vy - ry * vx;
+        rSq += rx * rx + ry * ry;
       }
-      org.lastBoneAngle = angle;
+      if (rSq > 0.01) {
+        org.totalRotation += cross / rSq;
+        const abs = Math.abs(org.totalRotation);
+        if (abs > org.peakRotation) org.peakRotation = abs;
+      }
     }
     // altura máxima já atingida (em px acima do chão) — alimenta o modo "pular"
     let minY = Infinity;
@@ -548,11 +555,13 @@
     lastGenNumber = generation;
     // acumula no histograma global de todas as gerações
     for (const d of metrics) allGenDistances.push(d);
-    // elegibilidade: "punir giro" exclui quem rotacionou ≥ 360° (2π rad)
+    // elegibilidade: "punir giro" exclui quem em algum momento atingiu ≥360°
+    // (2π rad) de rotação acumulada do corpo todo. usa o PICO, não o net atual —
+    // assim quem girou pra frente e voltou também é pego.
     const eligible = [];
     if (punishSpin) {
       for (let i = 0; i < organisms.length; i++) {
-        if (Math.abs(organisms[i].totalRotation) < TAU) eligible.push(i);
+        if (organisms[i].peakRotation < TAU) eligible.push(i);
       }
     } else {
       for (let i = 0; i < organisms.length; i++) eligible.push(i);
@@ -1016,9 +1025,15 @@
   }
 
   function drawOrganism(org, isElite, isLeader) {
-    // ossos
-    ctx.strokeStyle = isElite ? 'rgba(220, 240, 235, 0.95)' : isLeader ? 'rgba(200, 230, 225, 0.85)' : 'rgba(180, 215, 210, 0.55)';
-    ctx.lineWidth = isElite ? 2.6 : isLeader ? 2.2 : 1.6;
+    // "punir giro" ligado + organismo já passou de 360°: tinge de vermelho e desfoca
+    const spunOut = punishSpin && org.peakRotation >= TAU;
+    if (spunOut) {
+      ctx.strokeStyle = 'rgba(255, 90, 110, 0.35)';
+      ctx.lineWidth = 1.4;
+    } else {
+      ctx.strokeStyle = isElite ? 'rgba(220, 240, 235, 0.95)' : isLeader ? 'rgba(200, 230, 225, 0.85)' : 'rgba(180, 215, 210, 0.55)';
+      ctx.lineWidth = isElite ? 2.6 : isLeader ? 2.2 : 1.6;
+    }
     for (const b of org.bones) {
       const v1 = org.vertices[b.a], v2 = org.vertices[b.b];
       ctx.beginPath();
@@ -1036,9 +1051,11 @@
       const m2x = (v2a.x + v2b.x) * 0.5, m2y = (v2a.y + v2b.y) * 0.5;
       const act = (org.activations && org.activations[mi]) || 0;
       const phase = (act + 1) * 0.5;
-      const a = isElite ? 0.92 : isLeader ? 0.78 : 0.55;
-      ctx.strokeStyle = 'hsla(' + (org.hue + phase * 40) + ', 75%, ' + (55 + phase * 18) + '%, ' + a + ')';
-      ctx.lineWidth = isElite ? 2.4 : isLeader ? 2.0 : 1.5;
+      const a = spunOut ? 0.25 : (isElite ? 0.92 : isLeader ? 0.78 : 0.55);
+      ctx.strokeStyle = spunOut
+        ? 'rgba(255, 90, 110, ' + a + ')'
+        : 'hsla(' + (org.hue + phase * 40) + ', 75%, ' + (55 + phase * 18) + '%, ' + a + ')';
+      ctx.lineWidth = spunOut ? 1.2 : (isElite ? 2.4 : isLeader ? 2.0 : 1.5);
       ctx.beginPath();
       ctx.moveTo(projX(m1x), projY(m1y));
       ctx.lineTo(projX(m2x), projY(m2y));
