@@ -37,7 +37,7 @@
   const VERTEX_R = 6;
   const HIT_R_VERTEX = 26; // raio de tolerância pra "clicar/arrastar até" uma articulação
   const HIT_R_BONE = 22;   // raio de tolerância pra "clicar/arrastar até" um osso
-  const POP_SIZE = 6;
+  const POP_SIZE = 50;
   const FLOOR_PAD = 150; // pixels do chão até a borda inferior (espaço pra régua + controles)
   const STEP_DT = 0.6;   // dt do mundo por quadro real (slower = menos louco)
   const MUSCLE_K = 0.35; // força do músculo na restrição
@@ -72,6 +72,8 @@
   let generation = 0;
   let bestEverDistance = 0;
   let flagX = START_X; // posição X (mundo) da bandeira: o mais longe já alcançado nesta sessão
+  let lastGenDistances = []; // distâncias da geração anterior (alimenta o histograma)
+  let lastGenNumber = 0;     // número da geração cujas distâncias estão em lastGenDistances
 
   // auto-boom: o tempo restante é em "ms de simulação", ou seja, anda mais
   // rápido quando o slider de velocidade está alto (assim quem acelera a
@@ -237,6 +239,7 @@
     flagX = START_X; // bandeira começa na linha de partida
     camX = START_X;
     organisms = [];
+    lastGenDistances = []; lastGenNumber = 0;
     for (let i = 0; i < POP_SIZE; i++) organisms.push(makeOrganism(randomGenome(), i));
     if (autoBoom) autoBoomReset();
   }
@@ -466,6 +469,9 @@
     if (state !== STATE.EVOLVING) return;
     // distância percorrida por cada um (a partir do startX)
     const dists = organisms.map(o => orgCenterX(o) - o.startX);
+    // guarda as distâncias dessa geração pro histograma da próxima
+    lastGenDistances = dists.slice();
+    lastGenNumber = generation;
     const usesStructure = tStructIdx >= 0;
     let bestIdx = 0;
     if (!usesStructure) {
@@ -724,25 +730,21 @@
       ctx.font = '11px serif';
       ctx.fillText(speedMult.toFixed(1) + '×', W / 2, autoBoom ? 66 : 48);
     }
-    drawBrainPanel();
+    drawHistogram();
   }
 
-  // ---- painel da rede neural do líder (organisms[0] é o elite — vencedor da geração anterior)
-  function drawBrainPanel() {
-    if (!organisms.length) return;
-    const elite = organisms[0];
-    const g = elite.genome;
-    const M = elite.muscles.length;
-    if (M === 0) return;
+  // ---- histograma da distância da geração anterior (10 classes)
+  function drawHistogram() {
+    if (!lastGenDistances.length) return;
+    const BINS = 10;
 
-    // tamanho do painel: encolhe em telas estreitas
     const isNarrow = W < 600;
-    const panelW = isNarrow ? Math.min(200, W - 32) : 250;
+    const panelW = isNarrow ? Math.min(220, W - 32) : 280;
     const panelH = isNarrow ? 130 : 160;
     const x0 = W - panelW - 14;
     const y0 = 14;
 
-    // fundo (mais opaco pra contrastar com o canvas quase preto)
+    // fundo
     ctx.fillStyle = 'rgba(16, 26, 36, 0.92)';
     ctx.strokeStyle = 'rgba(150, 235, 215, 0.45)';
     ctx.lineWidth = 1;
@@ -751,77 +753,71 @@
     ctx.stroke();
 
     // título
-    ctx.fillStyle = 'rgba(190, 235, 225, 0.65)';
+    ctx.fillStyle = 'rgba(190, 235, 225, 0.7)';
     ctx.font = '10px serif';
     ctx.textAlign = 'left';
-    ctx.fillText('cérebro do líder · gen ' + generation, x0 + 12, y0 + 14);
+    ctx.fillText(
+      'distância · gen ' + lastGenNumber + ' · ' + lastGenDistances.length + ' indivíduos',
+      x0 + 12, y0 + 14
+    );
 
-    // layout das camadas
-    const padTop = 24, padBot = 10, padX = 20;
-    const colXs = [x0 + padX, x0 + panelW / 2, x0 + panelW - padX];
-    const colY0 = y0 + padTop;
-    const colH = panelH - padTop - padBot;
-    const layerSizes = [NN_INPUTS, NN_HIDDEN, M];
-    const positions = layerSizes.map((n, c) => {
-      const out = [];
-      for (let i = 0; i < n; i++) {
-        const y = n === 1 ? colY0 + colH / 2 : colY0 + (i / (n - 1)) * colH;
-        out.push({ x: colXs[c], y });
-      }
-      return out;
-    });
-
-    // arestas — teal positivo, rosa negativo; opacidade/grossura pelo |w|
-    function drawEdges(prev, next, W1d, cols, rows) {
-      for (let i = 0; i < cols; i++) {
-        for (let j = 0; j < rows; j++) {
-          const w = W1d[i * rows + j];
-          const mag = Math.min(2.5, Math.abs(w));
-          const a = Math.min(0.85, 0.12 + mag * 0.32);
-          ctx.strokeStyle = w >= 0 ? 'rgba(150, 220, 210, ' + a + ')' : 'rgba(255, 140, 160, ' + a + ')';
-          ctx.lineWidth = Math.max(0.4, mag * 0.6);
-          ctx.beginPath();
-          ctx.moveTo(prev[i].x, prev[i].y);
-          ctx.lineTo(next[j].x, next[j].y);
-          ctx.stroke();
-        }
-      }
+    // bins
+    let minD = Infinity, maxD = -Infinity;
+    for (const d of lastGenDistances) { if (d < minD) minD = d; if (d > maxD) maxD = d; }
+    const range = Math.max(1, maxD - minD);
+    const bins = new Array(BINS).fill(0);
+    for (const d of lastGenDistances) {
+      let b = Math.floor((d - minD) / range * BINS);
+      if (b >= BINS) b = BINS - 1;
+      if (b < 0) b = 0;
+      bins[b]++;
     }
-    drawEdges(positions[0], positions[1], g.W1, NN_INPUTS, NN_HIDDEN);
-    drawEdges(positions[1], positions[2], g.W2, NN_HIDDEN, M);
+    let maxCount = 0;
+    for (const c of bins) if (c > maxCount) maxCount = c;
+    if (maxCount === 0) maxCount = 1;
 
-    // nós
-    for (let c = 0; c < 3; c++) {
-      for (let i = 0; i < layerSizes[c]; i++) {
-        const p = positions[c][i];
-        let fill = 'rgba(180, 230, 220, 0.85)';
-        let r = 3.2;
-        if (c === 2 && elite.activations) {
-          const act = elite.activations[i] || 0;
-          const phase = (act + 1) * 0.5;
-          fill = 'hsla(' + (elite.hue + phase * 40) + ', 78%, ' + (55 + phase * 20) + '%, 0.95)';
-          r = 3.6 + Math.abs(act) * 1.4; // pulsa com a ativação
-        } else if (c === 0) {
-          fill = 'rgba(255, 200, 130, 0.85)'; // entradas: dourado
-        }
-        ctx.fillStyle = fill;
-        ctx.beginPath();
-        ctx.arc(p.x, p.y, r, 0, TAU);
-        ctx.fill();
+    // layout da área do gráfico
+    const padTop = 26, padBot = 26, padLeft = 14, padRight = 14;
+    const chartX = x0 + padLeft;
+    const chartY = y0 + padTop;
+    const chartW = panelW - padLeft - padRight;
+    const chartH = panelH - padTop - padBot;
+    const barW = chartW / BINS;
+
+    // linha-base
+    ctx.strokeStyle = 'rgba(150, 235, 215, 0.20)';
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(chartX, chartY + chartH + 0.5);
+    ctx.lineTo(chartX + chartW, chartY + chartH + 0.5);
+    ctx.stroke();
+
+    // barras: do menor (rosa) ao maior (dourado/teal) — quem foi mais longe
+    for (let i = 0; i < BINS; i++) {
+      const h = (bins[i] / maxCount) * chartH;
+      const bx = chartX + i * barW;
+      const by = chartY + chartH - h;
+      const t = i / Math.max(1, BINS - 1);
+      // interpolação rosa → teal: tons que já existem na cena
+      const hue = lerp(340, 170, t);
+      ctx.fillStyle = 'hsla(' + hue + ', 65%, 60%, 0.85)';
+      ctx.fillRect(bx + 1, by, Math.max(1, barW - 2), h);
+      // contagem em cima da barra (só se couber)
+      if (bins[i] > 0 && barW > 14) {
+        ctx.fillStyle = 'rgba(190, 235, 225, 0.55)';
+        ctx.font = '9px serif';
+        ctx.textAlign = 'center';
+        ctx.fillText(String(bins[i]), bx + barW / 2, by - 2);
       }
     }
 
-    // legenda das entradas (microtexto à esquerda)
-    if (!isNarrow) {
-      const labels = ['sin', 'cos', 'chão', 'alt', 'incl', 'b'];
-      ctx.fillStyle = 'rgba(190, 235, 225, 0.45)';
-      ctx.font = '9px serif';
-      ctx.textAlign = 'right';
-      for (let i = 0; i < Math.min(labels.length, NN_INPUTS); i++) {
-        const p = positions[0][i];
-        ctx.fillText(labels[i], p.x - 6, p.y + 3);
-      }
-    }
+    // rótulos do eixo (min e max)
+    ctx.fillStyle = 'rgba(190, 235, 225, 0.55)';
+    ctx.font = '9px serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(Math.round(minD) + ' px', chartX, chartY + chartH + 12);
+    ctx.textAlign = 'right';
+    ctx.fillText(Math.round(maxD) + ' px', chartX + chartW, chartY + chartH + 12);
   }
 
   function roundRect(x, y, w, h, r) {
