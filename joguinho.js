@@ -57,7 +57,7 @@
   // template (desenho do usuário)
   let tVertices = []; // [{x, y}] articulações
   let tBones = [];    // [{a, b}] (índices de articulação)
-  let tMuscles = [];  // [{ba, bb}] (índices de ossos)
+  let tMuscles = [];  // [{ba, bb, ta, tb}] (ossos + posição da fixação em [0,1])
   let history = [];   // pra desfazer (pilha de ações)
   let placementMode = 'joint'; // 'joint' | 'bone' | 'muscle' | 'structure'
   let tStructIdx = -1; // índice da articulação marcada como "estrutura sensível" (-1 = nenhuma)
@@ -66,6 +66,17 @@
   let dragStart = null;     // {x, y} ponto inicial do drag
   let dragStartV = -1;      // índice de articulação se drag de joint
   let dragStartB = -1;      // índice de osso se drag de bone (modo músculo)
+  let dragStartT = 0.5;     // t ∈ [0,1] do clique sobre o osso inicial (fixação do músculo)
+
+  // ---- zoom/pan da tela de montagem
+  let drawScale = 1;
+  let drawPanX = 0;
+  let drawPanY = 0;
+  let pinchInitial = null;
+  function screenToWorld(sx, sy) {
+    return { x: (sx - drawPanX) / drawScale, y: (sy - drawPanY) / drawScale };
+  }
+  function resetDrawView() { drawScale = 1; drawPanX = 0; drawPanY = 0; }
   let dragEnd = null;       // {x, y} atual durante drag
   let hoverV = -1;
   let hoverB = -1;
@@ -191,8 +202,10 @@
 
   // ---- desenho da criatura
   function vertexNear(x, y) {
-    // toca a mais próxima dentro do raio de tolerância (dedos não miram pixel exato)
-    let best = -1, bestD2 = HIT_R_VERTEX * HIT_R_VERTEX;
+    // toca a mais próxima dentro do raio de tolerância (dedos não miram pixel exato).
+    // tolerância é em pixels de tela, então escala inversamente com o zoom.
+    const tol = HIT_R_VERTEX / Math.max(0.1, drawScale);
+    let best = -1, bestD2 = tol * tol;
     for (let i = tVertices.length - 1; i >= 0; i--) {
       const v = tVertices[i];
       const dx = v.x - x, dy = v.y - y;
@@ -212,7 +225,8 @@
     return Math.sqrt(ex * ex + ey * ey);
   }
   function boneNear(x, y) {
-    let best = -1, bestD = HIT_R_BONE;
+    const tol = HIT_R_BONE / Math.max(0.1, drawScale);
+    let best = -1, bestD = tol;
     for (let i = 0; i < tBones.length; i++) {
       const v1 = tVertices[tBones[i].a], v2 = tVertices[tBones[i].b];
       const d = ptSegDist(x, y, v1.x, v1.y, v2.x, v2.y);
@@ -224,6 +238,21 @@
     const b = tBones[boneIdx];
     const v1 = tVertices[b.a], v2 = tVertices[b.b];
     return { x: (v1.x + v2.x) * 0.5, y: (v1.y + v2.y) * 0.5 };
+  }
+  // ponto parametrico sobre um osso (t=0 → vértice a, t=1 → vértice b)
+  function bonePoint(boneIdx, t) {
+    const b = tBones[boneIdx];
+    const v1 = tVertices[b.a], v2 = tVertices[b.b];
+    return { x: v1.x + t * (v2.x - v1.x), y: v1.y + t * (v2.y - v1.y) };
+  }
+  // projeção de um ponto qualquer sobre um osso → devolve t em [0,1]
+  function bonePointT(boneIdx, x, y) {
+    const b = tBones[boneIdx];
+    const v1 = tVertices[b.a], v2 = tVertices[b.b];
+    const dx = v2.x - v1.x, dy = v2.y - v1.y;
+    const len2 = dx * dx + dy * dy;
+    if (len2 < 1) return 0.5;
+    return clamp(((x - v1.x) * dx + (y - v1.y) * dy) / len2, 0, 1);
   }
   function addVertex(x, y) {
     tVertices.push({ x, y });
@@ -238,10 +267,20 @@
     history.push({ kind: 'b' });
     return true;
   }
-  function addMuscle(ba, bb) {
+  function addMuscle(ba, bb, ta, tb) {
     if (ba === bb || ba < 0 || bb < 0) return false;
-    for (const ex of tMuscles) if ((ex.ba === ba && ex.bb === bb) || (ex.ba === bb && ex.bb === ba)) return false;
-    tMuscles.push({ ba, bb });
+    const tA = ta == null ? 0.5 : clamp(+ta, 0, 1);
+    const tB = tb == null ? 0.5 : clamp(+tb, 0, 1);
+    // duplicada só se for o mesmo par de ossos COM as mesmas fixações (≤ 0.05 de
+    // tolerância) — assim o usuário pode conectar 2 músculos entre o mesmo par.
+    for (const ex of tMuscles) {
+      const sameBones = (ex.ba === ba && ex.bb === bb) || (ex.ba === bb && ex.bb === ba);
+      if (!sameBones) continue;
+      const eA = (ex.ba === ba) ? ex.ta : ex.tb;
+      const eB = (ex.ba === ba) ? ex.tb : ex.ta;
+      if (Math.abs(eA - tA) < 0.05 && Math.abs(eB - tB) < 0.05) return false;
+    }
+    tMuscles.push({ ba, bb, ta: tA, tb: tB });
     history.push({ kind: 'm' });
     return true;
   }
@@ -259,6 +298,7 @@
     if (state !== STATE.DRAWING) return;
     tVertices = []; tBones = []; tMuscles = []; history = [];
     tStructIdx = -1;
+    resetDrawView();
   }
 
   // ---- início da simulação
@@ -344,14 +384,17 @@
     }));
     // músculos ligam dois ossos; o "comprimento" é a distância entre os
     // midpoints dos dois ossos no descanso
-    function midOf(boneIdx) {
+    function pointAt(boneIdx, t) {
       const bb = tBones[boneIdx];
-      return { x: (tVertices[bb.a].x + tVertices[bb.b].x) * 0.5, y: (tVertices[bb.a].y + tVertices[bb.b].y) * 0.5 };
+      const va = tVertices[bb.a], vb = tVertices[bb.b];
+      return { x: va.x + t * (vb.x - va.x), y: va.y + t * (vb.y - va.y) };
     }
     const muscles = tMuscles.map((m) => {
-      const m1 = midOf(m.ba), m2 = midOf(m.bb);
+      const ta = m.ta == null ? 0.5 : m.ta;
+      const tb = m.tb == null ? 0.5 : m.tb;
+      const m1 = pointAt(m.ba, ta), m2 = pointAt(m.bb, tb);
       const base = Math.max(2, dist(m1, m2));
-      return { ba: m.ba, bb: m.bb, base };
+      return { ba: m.ba, bb: m.bb, ta, tb, base };
     });
     return {
       vertices, bones, muscles,
@@ -525,18 +568,28 @@
     const b1 = org.bones[m.ba], b2 = org.bones[m.bb];
     const v1a = org.vertices[b1.a], v1b = org.vertices[b1.b];
     const v2a = org.vertices[b2.a], v2b = org.vertices[b2.b];
-    const m1x = (v1a.x + v1b.x) * 0.5, m1y = (v1a.y + v1b.y) * 0.5;
-    const m2x = (v2a.x + v2b.x) * 0.5, m2y = (v2a.y + v2b.y) * 0.5;
+    const ta = m.ta, tb = m.tb;
+    const ta_ = 1 - ta, tb_ = 1 - tb;
+    // pontos de fixação paramétricos
+    const m1x = ta_ * v1a.x + ta * v1b.x;
+    const m1y = ta_ * v1a.y + ta * v1b.y;
+    const m2x = tb_ * v2a.x + tb * v2b.x;
+    const m2y = tb_ * v2a.y + tb * v2b.y;
     const dx = m2x - m1x, dy = m2y - m1y;
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < 0.0001) return;
     const factor = (d - target) / d * k;
-    const fx = dx * factor, fy = dy * factor;
-    // move o midpoint de b1 em direção a b2: aplica o mesmo delta nos dois vértices de b1
-    v1a.x += fx; v1a.y += fy;
-    v1b.x += fx; v1b.y += fy;
-    v2a.x -= fx; v2a.y -= fy;
-    v2b.x -= fx; v2b.y -= fy;
+    // distribui a correção entre os dois vértices de cada osso em proporção a
+    // (1-t) e t — assim a fixação não-central efetivamente "puxa" o vértice
+    // mais próximo, e o sistema permanece preserva quantidade de movimento.
+    const c1 = 1 / (ta_ * ta_ + ta * ta);
+    const c2 = 1 / (tb_ * tb_ + tb * tb);
+    const fx1 = dx * factor * c1, fy1 = dy * factor * c1;
+    const fx2 = dx * factor * c2, fy2 = dy * factor * c2;
+    v1a.x += ta_ * fx1; v1a.y += ta_ * fy1;
+    v1b.x += ta * fx1;  v1b.y += ta * fy1;
+    v2a.x -= tb_ * fx2; v2a.y -= tb_ * fy2;
+    v2b.x -= tb * fx2;  v2b.y -= tb * fy2;
   }
 
   function orgCenterX(org) {
@@ -622,9 +675,63 @@
   canvas.addEventListener('mousedown', onDown);
   canvas.addEventListener('mousemove', onMove);
   window.addEventListener('mouseup', onUp);
-  canvas.addEventListener('touchstart', (e) => { e.preventDefault(); onDown(e); }, { passive: false });
-  canvas.addEventListener('touchmove', (e) => { e.preventDefault(); onMove(e); }, { passive: false });
-  canvas.addEventListener('touchend', (e) => { e.preventDefault(); onUp(e); }, { passive: false });
+  // touch: 2 dedos = pinch (zoom + pan), 1 dedo = desenho
+  canvas.addEventListener('touchstart', (e) => {
+    e.preventDefault();
+    if (state === STATE.DRAWING && e.touches.length === 2) {
+      const t1 = e.touches[0], t2 = e.touches[1];
+      const dx = t2.clientX - t1.clientX, dy = t2.clientY - t1.clientY;
+      pinchInitial = {
+        dist: Math.sqrt(dx * dx + dy * dy),
+        midX: (t1.clientX + t2.clientX) / 2,
+        midY: (t1.clientY + t2.clientY) / 2,
+        scale0: drawScale, panX0: drawPanX, panY0: drawPanY,
+      };
+      dragStart = null; dragStartV = -1; dragStartB = -1; dragEnd = null;
+      return;
+    }
+    pinchInitial = null;
+    onDown(e);
+  }, { passive: false });
+  canvas.addEventListener('touchmove', (e) => {
+    e.preventDefault();
+    if (pinchInitial && e.touches.length >= 2) {
+      const t1 = e.touches[0], t2 = e.touches[1];
+      const dx = t2.clientX - t1.clientX, dy = t2.clientY - t1.clientY;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+      const midX = (t1.clientX + t2.clientX) / 2;
+      const midY = (t1.clientY + t2.clientY) / 2;
+      const newScale = clamp(pinchInitial.scale0 * (dist / pinchInitial.dist), 0.3, 6);
+      // ponto inicial entre os dedos fica preso ao mesmo ponto do mundo
+      const wx = (pinchInitial.midX - pinchInitial.panX0) / pinchInitial.scale0;
+      const wy = (pinchInitial.midY - pinchInitial.panY0) / pinchInitial.scale0;
+      drawPanX = midX - wx * newScale;
+      drawPanY = midY - wy * newScale;
+      drawScale = newScale;
+      return;
+    }
+    if (pinchInitial) return;
+    onMove(e);
+  }, { passive: false });
+  canvas.addEventListener('touchend', (e) => {
+    e.preventDefault();
+    if (pinchInitial) {
+      if (e.touches.length === 0) pinchInitial = null;
+      return;
+    }
+    onUp(e);
+  }, { passive: false });
+  // wheel: zoom no cursor (desktop)
+  canvas.addEventListener('wheel', (e) => {
+    if (state !== STATE.DRAWING) return;
+    e.preventDefault();
+    const newScale = clamp(drawScale * Math.exp(-e.deltaY * 0.001), 0.3, 6);
+    const wx = (e.clientX - drawPanX) / drawScale;
+    const wy = (e.clientY - drawPanY) / drawScale;
+    drawPanX = e.clientX - wx * newScale;
+    drawPanY = e.clientY - wy * newScale;
+    drawScale = newScale;
+  }, { passive: false });
 
   function onDown(e) {
     if (state !== STATE.DRAWING) return;
@@ -632,21 +739,22 @@
     dragStart = { x: p.x, y: p.y };
     dragEnd = { x: p.x, y: p.y };
     dragStartV = -1; dragStartB = -1;
+    const w = screenToWorld(p.x, p.y);
     if (placementMode === 'joint') {
       // só vai adicionar no onUp se for um clique (sem arrastar)
     } else if (placementMode === 'bone') {
-      // tenta começar de uma articulação
-      dragStartV = vertexNear(p.x, p.y);
+      dragStartV = vertexNear(w.x, w.y);
     } else if (placementMode === 'muscle') {
-      // tenta começar de um osso
-      dragStartB = boneNear(p.x, p.y);
+      dragStartB = boneNear(w.x, w.y);
+      if (dragStartB >= 0) dragStartT = bonePointT(dragStartB, w.x, w.y);
     }
   }
   function onMove(e) {
     const p = eventXY(e);
     if (state === STATE.DRAWING) {
-      hoverV = (placementMode !== 'muscle') ? vertexNear(p.x, p.y) : -1;
-      hoverB = (placementMode === 'muscle') ? boneNear(p.x, p.y) : -1;
+      const w = screenToWorld(p.x, p.y);
+      hoverV = (placementMode !== 'muscle') ? vertexNear(w.x, w.y) : -1;
+      hoverB = (placementMode === 'muscle') ? boneNear(w.x, w.y) : -1;
       if (dragStart) dragEnd = { x: p.x, y: p.y };
     }
   }
@@ -659,35 +767,35 @@
     const py = p ? (p.clientY != null ? p.clientY : dragEnd.y) : dragEnd.y;
     const dx = px - dragStart.x, dy = py - dragStart.y;
     const dragLen = Math.sqrt(dx * dx + dy * dy);
+    const w = screenToWorld(px, py);
     if (placementMode === 'joint') {
-      // clique simples (sem arrastar muito) adiciona uma articulação
-      if (dragLen < 10) addVertex(px, py);
+      if (dragLen < 10) addVertex(w.x, w.y);
       else flash('no modo articulação, só clique pra colocar pontos');
     } else if (placementMode === 'structure') {
-      // clique numa articulação a marca como "estrutura sensível"; clicar nela de novo desmarca
       if (dragLen < 14) {
-        const vi = vertexNear(px, py);
+        const vi = vertexNear(w.x, w.y);
         if (vi < 0) flash('clique numa articulação pra marcá-la como estrutura sensível');
         else if (tStructIdx === vi) tStructIdx = -1;
         else tStructIdx = vi;
       }
     } else if (placementMode === 'bone') {
-      // arrasta de articulação para articulação
       if (dragStartV < 0) flash('osso precisa começar numa articulação');
       else if (dragLen > 10) {
-        const endV = vertexNear(px, py);
+        const endV = vertexNear(w.x, w.y);
         if (endV < 0) flash('osso precisa terminar numa articulação');
         else if (endV === dragStartV) flash('articulações precisam ser diferentes');
         else if (!addBone(dragStartV, endV)) flash('esse osso já existe');
       }
     } else if (placementMode === 'muscle') {
-      // arrasta de osso para osso
       if (dragStartB < 0) flash('músculo precisa começar num osso');
       else if (dragLen > 10) {
-        const endB = boneNear(px, py);
+        const endB = boneNear(w.x, w.y);
         if (endB < 0) flash('músculo precisa terminar num osso');
         else if (endB === dragStartB) flash('ossos precisam ser diferentes');
-        else if (!addMuscle(dragStartB, endB)) flash('esse músculo já existe');
+        else {
+          const endT = bonePointT(endB, w.x, w.y);
+          if (!addMuscle(dragStartB, endB, dragStartT, endT)) flash('esse músculo já existe');
+        }
       }
     }
     dragStart = null; dragStartV = -1; dragStartB = -1; dragEnd = null;
@@ -721,8 +829,12 @@
       ctx.fillStyle = 'rgba(150, 220, 210, 0.4)';
       ctx.font = '13px serif';
       ctx.textAlign = 'center';
-      ctx.fillText('clique pra colocar a primeira articulação', W / 2, H / 2);
+      ctx.fillText('clique pra colocar a primeira articulação · pinça/roda pra zoom', W / 2, H / 2);
     }
+    // tudo desenhado a seguir vai no espaço da criatura (sob zoom+pan).
+    ctx.save();
+    ctx.translate(drawPanX, drawPanY);
+    ctx.scale(drawScale, drawScale);
     // ossos (linha sólida, destaca o hovered no modo músculo)
     for (let i = 0; i < tBones.length; i++) {
       const b = tBones[i];
@@ -735,12 +847,12 @@
       ctx.lineWidth = (isStart || isHover) ? 3 : 2.2;
       ctx.beginPath(); ctx.moveTo(v1.x, v1.y); ctx.lineTo(v2.x, v2.y); ctx.stroke();
     }
-    // músculos: linha tracejada entre os midpoints dos dois ossos
+    // músculos: linha tracejada entre os pontos de fixação dos dois ossos
     ctx.strokeStyle = 'rgba(255, 130, 150, 0.85)';
     ctx.lineWidth = 1.8;
     ctx.setLineDash([6, 5]);
     for (const m of tMuscles) {
-      const m1 = boneMid(m.ba), m2 = boneMid(m.bb);
+      const m1 = bonePoint(m.ba, m.ta), m2 = bonePoint(m.bb, m.tb);
       ctx.beginPath(); ctx.moveTo(m1.x, m1.y); ctx.lineTo(m2.x, m2.y); ctx.stroke();
       // pequenos discos nos pontos de fixação
       ctx.fillStyle = 'rgba(255, 130, 150, 0.7)';
@@ -748,16 +860,20 @@
       ctx.beginPath(); ctx.arc(m2.x, m2.y, 3, 0, TAU); ctx.fill();
     }
     ctx.setLineDash([]);
-    // preview do drag
+    // preview do drag (dragStart/dragEnd estão em coords de TELA — converte pra mundo)
     if (dragStart && dragEnd) {
-      const dx = dragEnd.x - dragStart.x, dy = dragEnd.y - dragStart.y;
-      if (dx * dx + dy * dy > 100) {
+      const wsx = (dragStart.x - drawPanX) / drawScale;
+      const wsy = (dragStart.y - drawPanY) / drawScale;
+      const wex = (dragEnd.x - drawPanX) / drawScale;
+      const wey = (dragEnd.y - drawPanY) / drawScale;
+      const sdx = dragEnd.x - dragStart.x, sdy = dragEnd.y - dragStart.y;
+      if (sdx * sdx + sdy * sdy > 100) {
         const isMuscle = placementMode === 'muscle';
         const isBone = placementMode === 'bone';
         ctx.strokeStyle = isMuscle ? 'rgba(255, 130, 150, 0.55)' : isBone ? 'rgba(210, 235, 230, 0.55)' : 'rgba(150, 220, 210, 0.4)';
-        ctx.lineWidth = 1.6;
-        if (isMuscle) ctx.setLineDash([6, 5]);
-        ctx.beginPath(); ctx.moveTo(dragStart.x, dragStart.y); ctx.lineTo(dragEnd.x, dragEnd.y); ctx.stroke();
+        ctx.lineWidth = 1.6 / drawScale;
+        if (isMuscle) ctx.setLineDash([6 / drawScale, 5 / drawScale]);
+        ctx.beginPath(); ctx.moveTo(wsx, wsy); ctx.lineTo(wex, wey); ctx.stroke();
         ctx.setLineDash([]);
       }
     }
@@ -771,7 +887,8 @@
       ctx.beginPath(); ctx.arc(v.x, v.y, isHover || isStart ? VERTEX_R + 1 : VERTEX_R, 0, TAU); ctx.fill();
       if (isStruct) drawStructMark(v.x, v.y, 'rgba(255, 200, 130, 0.95)');
     }
-    // dica do modo estrutura
+    ctx.restore();
+    // dica do modo estrutura (espaço de tela)
     if (placementMode === 'structure' && tVertices.length > 0) {
       ctx.fillStyle = 'rgba(255, 200, 130, 0.7)';
       ctx.font = '11px serif';
@@ -782,6 +899,13 @@
           : 'estrutura escolhida · clique nela de novo para desmarcar',
         W / 2, floorY - 24
       );
+    }
+    // indicador de zoom (canto inferior esquerdo, discreto)
+    if (Math.abs(drawScale - 1) > 0.02) {
+      ctx.fillStyle = 'rgba(190, 235, 225, 0.5)';
+      ctx.font = '10px serif';
+      ctx.textAlign = 'left';
+      ctx.fillText('zoom ' + drawScale.toFixed(2) + '×', 14, floorY - 12);
     }
   }
 
@@ -1046,14 +1170,15 @@
       ctx.lineTo(projX(v2.x), projY(v2.y));
       ctx.stroke();
     }
-    // músculos: linha entre os midpoints dos dois ossos, cor varia com a fase de contração
+    // músculos: linha entre os pontos de fixação dos dois ossos, cor varia com a fase de contração
     for (let mi = 0; mi < org.muscles.length; mi++) {
       const m = org.muscles[mi];
       const b1 = org.bones[m.ba], b2 = org.bones[m.bb];
       const v1a = org.vertices[b1.a], v1b = org.vertices[b1.b];
       const v2a = org.vertices[b2.a], v2b = org.vertices[b2.b];
-      const m1x = (v1a.x + v1b.x) * 0.5, m1y = (v1a.y + v1b.y) * 0.5;
-      const m2x = (v2a.x + v2b.x) * 0.5, m2y = (v2a.y + v2b.y) * 0.5;
+      const ta_ = 1 - m.ta, tb_ = 1 - m.tb;
+      const m1x = ta_ * v1a.x + m.ta * v1b.x, m1y = ta_ * v1a.y + m.ta * v1b.y;
+      const m2x = tb_ * v2a.x + m.tb * v2b.x, m2y = tb_ * v2a.y + m.tb * v2b.y;
       const act = (org.activations && org.activations[mi]) || 0;
       const phase = (act + 1) * 0.5;
       const a = spunOut ? 0.25 : (isElite ? 0.92 : isLeader ? 0.78 : 0.55);
