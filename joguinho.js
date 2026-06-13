@@ -813,7 +813,12 @@
       const isLeader = orgMetric(org) === leaderM;
       drawOrganism(org, isElite, isLeader);
     }
-    // HUD (centro superior pra não brigar com o link "← ecossistema" e a bandeira)
+    // HUD: posiciona logo abaixo dos histogramas pra não brigar com eles à
+    // direita. antes do primeiro BOOM (ainda não há histograma), sobe pro topo.
+    const isNarrow = W < 600;
+    const panelH = isNarrow ? 120 : 150;
+    const havePanels = lastGenDistances.length > 0;
+    const hudY = havePanels ? (14 + panelH * 2 + 8 + 22) : 28;
     ctx.fillStyle = 'rgba(190, 235, 225, 0.85)';
     ctx.font = '13px serif';
     ctx.textAlign = 'center';
@@ -825,17 +830,17 @@
       for (const o of organisms) if (o.structPoints < minPts) minPts = o.structPoints;
       hud += ' · est. sens. min ' + minPts.toFixed(1);
     }
-    ctx.fillText(hud, W / 2, 28);
+    ctx.fillText(hud, W / 2, hudY);
     if (autoBoom) {
       // mostra os segundos reais que faltam (já compensa a velocidade)
       const realRemaining = Math.max(0, Math.round(autoBoomRemaining / Math.max(0.01, speedMult) / 1000));
       ctx.fillStyle = 'rgba(255, 200, 130, 0.85)';
-      ctx.fillText('próximo boom em ' + realRemaining + 's', W / 2, 48);
+      ctx.fillText('próximo boom em ' + realRemaining + 's', W / 2, hudY + 20);
     }
     if (Math.abs(speedMult - 1) > 0.05) {
       ctx.fillStyle = speedMult > 1 ? 'rgba(255, 200, 130, 0.85)' : 'rgba(150, 230, 220, 0.7)';
       ctx.font = '11px serif';
-      ctx.fillText(speedMult.toFixed(1) + '×', W / 2, autoBoom ? 66 : 48);
+      ctx.fillText(speedMult.toFixed(1) + '×', W / 2, hudY + (autoBoom ? 38 : 20));
     }
     drawHistograms();
   }
