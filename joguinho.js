@@ -59,8 +59,9 @@
   let tBones = [];    // [{a, b}] (índices de articulação)
   let tMuscles = [];  // [{ba, bb, ta, tb}] (ossos + posição da fixação em [0,1])
   let history = [];   // pra desfazer (pilha de ações)
-  let placementMode = 'joint'; // 'joint' | 'bone' | 'muscle' | 'structure'
+  let placementMode = 'joint'; // 'joint' | 'bone' | 'muscle' | 'structure' | 'sticky'
   let tStructIdx = -1; // índice da articulação marcada como "estrutura sensível" (-1 = nenhuma)
+  let tStickyJoints = []; // índices de articulações aderentes (aderência sai da rede)
 
   // interação com mouse/toque
   let dragStart = null;     // {x, y} ponto inicial do drag
@@ -122,6 +123,7 @@
   const modeJoint = document.getElementById('mode-joint');
   const modeBone = document.getElementById('mode-bone');
   const modeMuscle = document.getElementById('mode-muscle');
+  const modeSticky = document.getElementById('mode-sticky');
   const structToggle = document.getElementById('struct-toggle');
   const undoBtn = document.getElementById('undo-btn');
   const clearBtn = document.getElementById('clear-btn');
@@ -144,11 +146,13 @@
     modeJoint.classList.toggle('on', m === 'joint');
     modeBone.classList.toggle('on', m === 'bone');
     modeMuscle.classList.toggle('on', m === 'muscle');
+    if (modeSticky) modeSticky.classList.toggle('on', m === 'sticky');
     if (structToggle) structToggle.classList.toggle('on', m === 'structure');
   }
   modeJoint.addEventListener('click', () => setMode('joint'));
   modeBone.addEventListener('click', () => setMode('bone'));
   modeMuscle.addEventListener('click', () => setMode('muscle'));
+  if (modeSticky) modeSticky.addEventListener('click', () => setMode('sticky'));
   if (structToggle) structToggle.addEventListener('click', () => setMode('structure'));
   undoBtn.addEventListener('click', undo);
   clearBtn.addEventListener('click', clearTemplate);
@@ -291,6 +295,8 @@
       const removedIdx = tVertices.length - 1;
       tVertices.pop();
       if (tStructIdx === removedIdx) tStructIdx = -1;
+      const sp = tStickyJoints.indexOf(removedIdx);
+      if (sp >= 0) tStickyJoints.splice(sp, 1);
     } else if (h.kind === 'b') tBones.pop();
     else if (h.kind === 'm') tMuscles.pop();
   }
@@ -298,6 +304,7 @@
     if (state !== STATE.DRAWING) return;
     tVertices = []; tBones = []; tMuscles = []; history = [];
     tStructIdx = -1;
+    tStickyJoints = [];
     resetDrawView();
   }
 
@@ -306,7 +313,9 @@
     if (state !== STATE.DRAWING) return;
     if (tVertices.length < 2) { flash('coloque ao menos 2 articulações'); return; }
     if (tBones.length < 2) { flash('coloque ao menos 2 ossos'); return; }
-    if (tMuscles.length === 0) { flash('sem músculos não há movimento — adicione pelo menos 1'); return; }
+    if (tMuscles.length === 0 && tStickyJoints.length === 0) {
+      flash('precisa de pelo menos 1 músculo ou 1 articulação aderente'); return;
+    }
     state = STATE.EVOLVING;
     drawCtrl.classList.add('hidden');
     evolCtrl.classList.remove('hidden');
@@ -337,9 +346,11 @@
   // ---- genoma e organismo
   function randomGenome() {
     const M = tMuscles.length;
+    const S = tStickyJoints.length;
+    const OUT = M + S;
     const W1 = new Array(NN_INPUTS * NN_HIDDEN);
     for (let i = 0; i < W1.length; i++) W1[i] = (Math.random() - 0.5) * 1.6;
-    const W2 = new Array(NN_HIDDEN * M);
+    const W2 = new Array(NN_HIDDEN * OUT);
     for (let i = 0; i < W2.length; i++) W2[i] = (Math.random() - 0.5) * 1.6;
     const amp = new Array(M);
     for (let i = 0; i < M; i++) amp[i] = rand(0.10, 0.28);
@@ -396,12 +407,15 @@
       const base = Math.max(2, dist(m1, m2));
       return { ba: m.ba, bb: m.bb, ta, tb, base };
     });
+    const stickyJoints = tStickyJoints.slice();
+    const OUT = muscles.length + stickyJoints.length;
     return {
       vertices, bones, muscles,
+      stickyJoints,
       time: 0, startX,
       genome,
-      activations: new Array(muscles.length).fill(0),       // versão suavizada (rate-limited) usada na física
-      rawActivations: new Array(muscles.length).fill(0),    // saída crua da rede
+      activations: new Array(OUT).fill(0),       // versão suavizada (rate-limited) usada na física
+      rawActivations: new Array(OUT).fill(0),    // saída crua da rede
       hue: (idx * 53) % 360,
       structureIdx: tStructIdx,
       structPoints: 0,    // 1 ponto / segundo / articulação que ficou acima da estrutura
@@ -455,10 +469,12 @@
       hidden[h] = Math.tanh(s);
     }
     const M = org.muscles.length;
-    const acts = new Array(M);
-    for (let m = 0; m < M; m++) {
+    const S = org.stickyJoints.length;
+    const OUT = M + S;
+    const acts = new Array(OUT);
+    for (let m = 0; m < OUT; m++) {
       let s = 0;
-      for (let h = 0; h < NN_HIDDEN; h++) s += hidden[h] * W2[h * M + m];
+      for (let h = 0; h < NN_HIDDEN; h++) s += hidden[h] * W2[h * OUT + m];
       acts[m] = Math.tanh(s);
     }
     return acts;
@@ -497,20 +513,31 @@
       v.x += vx;
       v.y += vy + GRAVITY * dt;
     }
+    // mapeia vértice → aderência individual (saída [M..M+S) da rede). vai de 0 (escorrega)
+    // a 1 (grudado). só substitui o atrito do chão se o vértice for "aderente".
+    const M = org.muscles.length;
+    const stickyAdh = new Map();
+    for (let si = 0; si < org.stickyJoints.length; si++) {
+      const idx = org.stickyJoints[si];
+      const out = org.activations[M + si] || 0;
+      stickyAdh.set(idx, clamp((out + 1) * 0.5, 0, 1));
+    }
     // restrições
     for (let it = 0; it < ITERATIONS; it++) {
       for (const b of org.bones) satisfyDistance(org.vertices[b.a], org.vertices[b.b], b.length, 0.5);
-      for (let mi = 0; mi < org.muscles.length; mi++) {
+      for (let mi = 0; mi < M; mi++) {
         const m = org.muscles[mi];
         const amp = org.genome.amp[mi];
         const target = Math.max(2, m.base * (1 + amp * org.activations[mi]));
         satisfyMuscle(org, m, target, MUSCLE_K);
       }
-      // chão + atrito
-      for (const v of org.vertices) {
+      // chão + atrito (sticky usa aderência individual; resto usa o slider)
+      for (let vi = 0; vi < org.vertices.length; vi++) {
+        const v = org.vertices[vi];
         if (v.y > floorY) {
           v.y = floorY;
-          v.px += (v.x - v.px) * frictionGround;
+          const f = stickyAdh.has(vi) ? stickyAdh.get(vi) : frictionGround;
+          v.px += (v.x - v.px) * f;
         }
       }
     }
@@ -579,17 +606,13 @@
     const d = Math.sqrt(dx * dx + dy * dy);
     if (d < 0.0001) return;
     const factor = (d - target) / d * k;
-    // distribui a correção entre os dois vértices de cada osso em proporção a
-    // (1-t) e t — assim a fixação não-central efetivamente "puxa" o vértice
-    // mais próximo, e o sistema permanece preserva quantidade de movimento.
-    const c1 = 1 / (ta_ * ta_ + ta * ta);
-    const c2 = 1 / (tb_ * tb_ + tb * tb);
-    const fx1 = dx * factor * c1, fy1 = dy * factor * c1;
-    const fx2 = dx * factor * c2, fy2 = dy * factor * c2;
-    v1a.x += ta_ * fx1; v1a.y += ta_ * fy1;
-    v1b.x += ta * fx1;  v1b.y += ta * fy1;
-    v2a.x -= tb_ * fx2; v2a.y -= tb_ * fy2;
-    v2b.x -= tb * fx2;  v2b.y -= tb * fy2;
+    const fx = dx * factor, fy = dy * factor;
+    // translação uniforme: cada osso se move como um todo (mais estável que
+    // distribuir por t, evita explosões em fixações extremas)
+    v1a.x += fx; v1a.y += fy;
+    v1b.x += fx; v1b.y += fy;
+    v2a.x -= fx; v2a.y -= fy;
+    v2b.x -= fx; v2b.y -= fy;
   }
 
   function orgCenterX(org) {
@@ -778,6 +801,16 @@
         else if (tStructIdx === vi) tStructIdx = -1;
         else tStructIdx = vi;
       }
+    } else if (placementMode === 'sticky') {
+      if (dragLen < 14) {
+        const vi = vertexNear(w.x, w.y);
+        if (vi < 0) flash('clique numa articulação pra alternar a aderência');
+        else {
+          const pos = tStickyJoints.indexOf(vi);
+          if (pos >= 0) tStickyJoints.splice(pos, 1);
+          else tStickyJoints.push(vi);
+        }
+      }
     } else if (placementMode === 'bone') {
       if (dragStartV < 0) flash('osso precisa começar numa articulação');
       else if (dragLen > 10) {
@@ -883,9 +916,15 @@
       const isHover = (placementMode !== 'muscle' && i === hoverV);
       const isStart = i === dragStartV;
       const isStruct = (i === tStructIdx);
+      const isSticky = tStickyJoints.indexOf(i) >= 0;
       ctx.fillStyle = isStart ? 'rgba(255, 200, 130, 1)' : isHover ? 'rgba(180, 235, 220, 1)' : 'rgba(140, 215, 205, 0.9)';
       ctx.beginPath(); ctx.arc(v.x, v.y, isHover || isStart ? VERTEX_R + 1 : VERTEX_R, 0, TAU); ctx.fill();
       if (isStruct) drawStructMark(v.x, v.y, 'rgba(255, 200, 130, 0.95)');
+      if (isSticky) {
+        ctx.strokeStyle = 'rgba(120, 180, 255, 0.9)';
+        ctx.lineWidth = 1.6;
+        ctx.beginPath(); ctx.arc(v.x, v.y, VERTEX_R + 5, 0, TAU); ctx.stroke();
+      }
     }
     ctx.restore();
     // dica do modo estrutura (espaço de tela)
@@ -1203,6 +1242,24 @@
       const sv = org.vertices[org.structureIdx];
       const a = isElite ? 0.95 : isLeader ? 0.85 : 0.55;
       drawStructMark(projX(sv.x), projY(sv.y), 'rgba(255, 200, 130, ' + a + ')');
+    }
+    // articulações aderentes: anel azul cuja opacidade reflete a aderência atual
+    if (org.stickyJoints && org.stickyJoints.length) {
+      const Mm = org.muscles.length;
+      for (let si = 0; si < org.stickyJoints.length; si++) {
+        const idx = org.stickyJoints[si];
+        if (idx >= org.vertices.length) continue;
+        const sv = org.vertices[idx];
+        const out = org.activations[Mm + si] || 0;
+        const adh = clamp((out + 1) * 0.5, 0, 1);
+        const baseA = isElite ? 0.95 : isLeader ? 0.85 : 0.6;
+        const a = baseA * (0.25 + 0.75 * adh);
+        ctx.strokeStyle = 'rgba(120, 180, 255, ' + a + ')';
+        ctx.lineWidth = isElite ? 1.8 : 1.4;
+        ctx.beginPath();
+        ctx.arc(projX(sv.x), projY(sv.y), (isElite ? 6 : 5), 0, TAU);
+        ctx.stroke();
+      }
     }
   }
 
