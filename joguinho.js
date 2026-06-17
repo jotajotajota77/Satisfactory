@@ -100,6 +100,9 @@
   // se ligado, criaturas que acumularam ≥ 360° de rotação são desclassificadas
   // do BOOM. se nenhuma sobrar, nova ninhada aleatória.
   let punishSpin = false;
+  // se ligado, só o elite (organisms[0] = melhor da geração anterior) é desenhado.
+  // a simulação continua igual pra todos — só a renderização dos outros some.
+  let eliteOnly = false;
   // objetivo da evolução: 'run' (distância horizontal) ou 'jump' (altura máxima)
   let evolMode = 'run';
   function autoBoomReset() {
@@ -139,6 +142,7 @@
   const cycleSlider = document.getElementById('cycle-slider');
   const cycleLabel = document.getElementById('cycle-label');
   const punishSpinBtn = document.getElementById('punish-spin-btn');
+  const eliteOnlyBtn = document.getElementById('elite-only-btn');
   const modeEvolBtn = document.getElementById('mode-evol-btn');
 
   function setMode(m) {
@@ -188,6 +192,14 @@
     }
   }
   if (punishSpinBtn) punishSpinBtn.addEventListener('click', () => setPunishSpin(!punishSpin));
+  function setEliteOnly(on) {
+    eliteOnly = !!on;
+    if (eliteOnlyBtn) {
+      eliteOnlyBtn.classList.toggle('on', eliteOnly);
+      eliteOnlyBtn.textContent = eliteOnly ? 'mostrar todos' : 'só elite';
+    }
+  }
+  if (eliteOnlyBtn) eliteOnlyBtn.addEventListener('click', () => setEliteOnly(!eliteOnly));
   function setEvolMode(m) {
     evolMode = m === 'jump' ? 'jump' : 'run';
     if (modeEvolBtn) {
@@ -969,8 +981,10 @@
       const m = orgMetric(o);
       if (m > leaderM) leaderM = m;
     }
-    // organismo elite (i=0) é o pai da geração; destacar
+    // organismo elite (i=0) é o pai da geração; destacar.
+    // "só elite": só desenha organisms[0], o resto fica invisível (mas continua simulando).
     for (let i = 0; i < organisms.length; i++) {
+      if (eliteOnly && i !== 0) continue;
       const org = organisms[i];
       const isElite = i === 0;
       const isLeader = orgMetric(org) === leaderM;
